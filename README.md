@@ -105,6 +105,6 @@ To update an existing Streamlit deployment, upload all files from this project o
 Live shelf inventory, authenticated distributor pricing, discontinued-status confirmation, and approved-equivalent recommendations require retailer/manufacturer-specific APIs or accounts. The app labels nearby results and document matches as leads that must be verified before ordering.
 
 
-## Adaptive Best Match v6
+## Project Intelligence (v7)
 
-The match engine now chooses a category-specific profile, dynamically weights only relevant attributes, recognizes consumer product-family names, penalizes conflicting storage/voltage/dimensions/condition, and exports confidence plus a score breakdown.
+The third workspace adds schedule extraction, an editable equipment register, duplicate consolidation, project rules, quote review, JSON backup/restore, project Excel exports, and submittal ZIP creation.

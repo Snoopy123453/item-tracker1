@@ -20,6 +20,10 @@ from product_finder.spreadsheet import create_product_workbook_bytes
 from product_finder.purchase_tracker import extract_purchase_candidates, create_purchase_tracker_bytes
 from product_finder.utils import clean_text, unique_keep_order
 from product_finder.vision import analyze_uploaded_image
+from product_finder.project_intelligence import (
+    consolidate_items, create_project_backup, create_project_workbook,
+    create_submittal_zip, extract_schedule_items, load_project_backup,
+)
 
 
 APP_TITLE = "Product Hunter Pro"
@@ -400,6 +404,121 @@ def _render_purchase_tracker() -> None:
         on_click="ignore",
     )
 
+
+def _default_project() -> dict:
+    return {
+        "project_name": "", "project_number": "", "client": "", "buyer": "",
+        "equipment": [], "documents": [], "quotes": [],
+        "preferences": {
+            "require_exact_model": True, "prefer_official_manufacturer": True,
+            "reject_refurbished": True, "allow_equivalents": False,
+            "minimum_match_score": 85, "priority": "Best specification match",
+        },
+    }
+
+
+def _render_project_intelligence(openai_api_key: str, model: str) -> None:
+    st.markdown("""<div class="hero"><h1>Project Intelligence</h1><p>Extract schedules, consolidate equipment, review project rules, compare quotes, and export a project workbook or submittal package.</p></div>""", unsafe_allow_html=True)
+    if "project_v7" not in st.session_state:
+        st.session_state.project_v7 = _default_project()
+    project = st.session_state.project_v7
+
+    restore = st.file_uploader("Restore a Product Hunter project backup", type=["json"], key="project_restore")
+    if restore is not None and st.button("Restore project", use_container_width=True):
+        try:
+            st.session_state.project_v7 = load_project_backup(restore.getvalue())
+            st.success("Project restored."); st.rerun()
+        except Exception as exc:
+            st.error(f"Could not restore project: {exc}")
+
+    a,b,c,d = st.columns(4)
+    project["project_name"] = a.text_input("Project name", value=project.get("project_name", ""))
+    project["project_number"] = b.text_input("Project number", value=project.get("project_number", ""))
+    project["client"] = c.text_input("Client / owner", value=project.get("client", ""))
+    project["buyer"] = d.text_input("Buyer", value=project.get("buyer", ""))
+
+    st.markdown("### 1. Import schedules")
+    uploads = st.file_uploader("Upload schedule PDFs, images, text, or CSV files", type=["pdf","png","jpg","jpeg","webp","txt","csv"], accept_multiple_files=True, key="project_docs")
+    if st.button("Extract equipment from uploaded schedules", type="primary", use_container_width=True):
+        if not uploads: st.error("Upload at least one schedule file.")
+        elif not openai_api_key: st.error("OpenAI API key is required for schedule extraction.")
+        else:
+            extracted=[]
+            progress=st.progress(0)
+            for i,f in enumerate(uploads,1):
+                try:
+                    extracted.extend(extract_schedule_items(file_bytes=f.getvalue(), filename=f.name, mime_type=f.type or "", openai_api_key=openai_api_key, model=model))
+                except Exception as exc:
+                    st.warning(f"{f.name}: {exc}")
+                progress.progress(i/len(uploads))
+            project["equipment"] = consolidate_items(project.get("equipment", []) + [x.to_row() for x in extracted])
+            project["documents"] = list(dict.fromkeys(project.get("documents", []) + [f.name for f in uploads]))
+            st.success(f"Added {len(extracted)} extracted row(s); consolidated register has {len(project['equipment'])} product(s).")
+
+    st.markdown("### 2. Review equipment register")
+    equipment_df = pd.DataFrame(project.get("equipment", []))
+    required_cols = ["item_tag","division","manufacturer","model","description","quantity","location","source_file","source_page","status","approved_listing","notes"]
+    for col in required_cols:
+        if col not in equipment_df: equipment_df[col] = [] if equipment_df.empty else ""
+    edited = st.data_editor(equipment_df[required_cols], num_rows="dynamic", use_container_width=True, hide_index=True,
+        column_config={
+            "quantity": st.column_config.NumberColumn("Quantity", min_value=1, step=1),
+            "approved_listing": st.column_config.LinkColumn("Approved listing"),
+            "status": st.column_config.SelectboxColumn("Status", options=["Needs search","Needs review","Approved","Rejected","Alternate","Submitted","Ordered","Received","Installed"]),
+        }, key="project_equipment_editor")
+    project["equipment"] = edited.fillna("").to_dict("records")
+    x,y = st.columns(2)
+    if x.button("Consolidate duplicates", use_container_width=True):
+        project["equipment"] = consolidate_items(project["equipment"]); st.rerun()
+    if y.button("Send equipment to Product Search", use_container_width=True):
+        queries=[]
+        for r in project["equipment"]:
+            q=" ".join(str(r.get(k,"")) for k in ("manufacturer","model","description") if r.get(k)).strip()
+            if q: queries.append(q)
+        st.session_state["project_search_queries"]="\n".join(dict.fromkeys(queries)); st.success("Search terms prepared. Switch to Product Search and paste/use the prepared list.")
+
+    st.markdown("### 3. Procurement rules")
+    pref=project.get("preferences", {})
+    p1,p2,p3,p4=st.columns(4)
+    pref["require_exact_model"]=p1.checkbox("Require exact model", value=bool(pref.get("require_exact_model",True)))
+    pref["prefer_official_manufacturer"]=p2.checkbox("Prefer official source", value=bool(pref.get("prefer_official_manufacturer",True)))
+    pref["reject_refurbished"]=p3.checkbox("Reject refurbished", value=bool(pref.get("reject_refurbished",True)))
+    pref["allow_equivalents"]=p4.checkbox("Allow equivalents", value=bool(pref.get("allow_equivalents",False)))
+    pref["minimum_match_score"]=st.slider("Minimum acceptable match score", 0, 100, int(pref.get("minimum_match_score",85)))
+    pref["priority"]=st.selectbox("Purchasing priority", ["Best specification match","Lowest total price","Fastest delivery","Local pickup","Preferred vendor"], index=0)
+    project["preferences"]=pref
+
+    st.markdown("### 4. Quote comparison")
+    quote_files=st.file_uploader("Upload vendor quote Excel or CSV files", type=["xlsx","csv"], accept_multiple_files=True, key="quote_uploads")
+    quote_rows=[]
+    for f in quote_files or []:
+        try:
+            frame = pd.read_csv(f) if f.name.lower().endswith('.csv') else pd.read_excel(f)
+            frame["source_quote"] = f.name
+            quote_rows.extend(frame.astype(object).where(pd.notna(frame), "").to_dict("records"))
+        except Exception as exc: st.warning(f"{f.name}: {exc}")
+    if quote_rows:
+        qdf=pd.DataFrame(quote_rows)
+        st.dataframe(qdf, use_container_width=True, hide_index=True)
+        project["quotes"]=quote_rows
+        numeric=qdf.select_dtypes(include="number")
+        if not numeric.empty:
+            st.caption("Numeric quote summary")
+            st.dataframe(numeric.describe().T, use_container_width=True)
+
+    st.markdown("### 5. Export and backup")
+    e1,e2,e3=st.columns(3)
+    backup_name, backup_bytes=create_project_backup(project)
+    e1.download_button("Download project backup", backup_bytes, file_name=backup_name, mime="application/json", use_container_width=True)
+    workbook_name, workbook_bytes=create_project_workbook(project)
+    e2.download_button("Download project Excel", workbook_bytes, file_name=workbook_name, mime=EXCEL_MIME, use_container_width=True)
+    doc_text=st.text_area("Optional spec/document links for submittal ZIP, one per line", key="submittal_links")
+    docs=[{"title":f"Document {i}","link":u} for i,u in enumerate(_split_lines(doc_text),1) if u.startswith(("http://","https://"))]
+    zip_name, zip_bytes=create_submittal_zip(project, docs)
+    e3.download_button("Download submittal ZIP", zip_bytes, file_name=zip_name, mime="application/zip", use_container_width=True)
+
+    st.session_state.project_v7=project
+
 def main() -> None:
     st.set_page_config(page_title="Product Hunter Pro", page_icon="🔎", layout="wide")
     st.markdown("""<style>
@@ -419,10 +538,14 @@ def main() -> None:
         return
 
     with st.sidebar:
-        app_mode = st.radio("Workspace", ["Product Search", "Purchase Tracker"], horizontal=False)
+        app_mode = st.radio("Workspace", ["Product Search", "Project Intelligence", "Purchase Tracker"], horizontal=False)
 
     if app_mode == "Purchase Tracker":
         _render_purchase_tracker()
+        return
+    if app_mode == "Project Intelligence":
+        serpapi_api_key, openai_api_key = _resolve_api_keys(config)
+        _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
     st.markdown("""<div class="hero"><h1>Product Hunter Pro</h1><p>AI-assisted product recognition, retailer comparison, nearby supplier leads, technical documents, embedded images, and procurement-ready Excel reports.</p></div>""", unsafe_allow_html=True)
@@ -467,6 +590,7 @@ def main() -> None:
             barcode_searches = st.text_input("Optional UPC / barcode / manufacturer part number", placeholder="012345678905 or JOSAM 30000-5A-Z")
             text_searches = st.text_area(
                 "Text searches, one per line",
+                value=st.session_state.get("project_search_queries", ""),
                 placeholder="black Nike hoodie\nCrucial 2TB NVMe SSD",
                 height=170,
             )
