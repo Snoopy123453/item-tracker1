@@ -16,6 +16,7 @@ from product_finder.search import (
     google_spec_sheet_search,
 )
 from product_finder.spreadsheet import create_product_workbook_bytes
+from product_finder.purchase_tracker import extract_purchase_candidates, create_purchase_tracker_bytes
 from product_finder.utils import clean_text, unique_keep_order
 from product_finder.vision import analyze_uploaded_image
 
@@ -287,6 +288,108 @@ def _show_spec_documents(results: list[SpecDocument]) -> None:
         },
     )
 
+
+def _render_purchase_tracker() -> None:
+    st.markdown("""<div class="hero"><h1>Purchase Tracker Builder</h1><p>Import a Product Hunter Excel report, select retailer links, and generate a separate purchasing workbook that tracks approvals, orders, costs, delivery, and received quantities.</p></div>""", unsafe_allow_html=True)
+
+    uploaded = st.file_uploader(
+        "Upload the original Product Hunter Excel file",
+        type=["xlsx"],
+        help="The app reads retailer links from Product Results, Products, Retailers, or other sheets containing URLs.",
+        key="purchase_tracker_source",
+    )
+    direct_links = st.text_area(
+        "Optional retailer links to add manually, one per line",
+        placeholder="https://retailer.com/product-page",
+        key="purchase_tracker_links",
+    )
+
+    candidates: list[dict] = []
+    if uploaded is not None:
+        try:
+            candidates = extract_purchase_candidates(uploaded.getvalue())
+            st.success(f"Found {len(candidates)} unique purchasable link(s) in the workbook.")
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"The workbook could not be read: {exc}")
+            return
+
+    existing = {str(row.get("product_link", "")).casefold() for row in candidates}
+    for link in _split_lines(direct_links):
+        if _valid_public_image_url(link) and link.casefold() not in existing:
+            existing.add(link.casefold())
+            candidates.append({
+                "select": True,
+                "product": "",
+                "model_or_search": "",
+                "retailer": "",
+                "unit_price": 0.0,
+                "quantity": 1,
+                "product_link": link,
+                "image_url": "",
+                "source_sheet": "Manual link",
+                "source_row": "",
+            })
+
+    if not candidates:
+        st.info("Upload an Excel report or paste at least one retailer product link.")
+        return
+
+    st.subheader("Choose products to track")
+    table = pd.DataFrame(candidates)
+    edited = st.data_editor(
+        table,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        column_config={
+            "select": st.column_config.CheckboxColumn("Add", default=False),
+            "product_link": st.column_config.LinkColumn("Retailer link", display_text="Open"),
+            "image_url": st.column_config.LinkColumn("Image", display_text="Open image"),
+            "unit_price": st.column_config.NumberColumn("Unit price", format="$%.2f", min_value=0.0),
+            "quantity": st.column_config.NumberColumn("Quantity", min_value=1, step=1),
+            "source_row": st.column_config.NumberColumn("Source row", disabled=True),
+        },
+        disabled=["source_sheet", "source_row"],
+        key="purchase_tracker_editor",
+    )
+
+    selected = edited[edited["select"] == True].to_dict("records")  # noqa: E712
+    st.caption(f"{len(selected)} item(s) selected.")
+
+    with st.form("purchase_tracker_details"):
+        left, right = st.columns(2)
+        with left:
+            tracker_name = st.text_input("Tracker name", placeholder="Plumbing Fixtures Purchase Tracker")
+            project_name = st.text_input("Project / job name")
+        with right:
+            buyer = st.text_input("Buyer / purchaser")
+            notes = st.text_area("Tracker notes", height=90)
+        build_tracker = st.form_submit_button("Build purchase tracker Excel", type="primary", use_container_width=True)
+
+    if not build_tracker:
+        return
+    if not selected:
+        st.error("Select at least one product link in the Add column.")
+        return
+
+    filename, tracker_bytes = create_purchase_tracker_bytes(
+        selected,
+        tracker_name=tracker_name,
+        project_name=project_name,
+        buyer=buyer,
+        notes=notes,
+    )
+    st.success(f"Purchase tracker ready: **{filename}**")
+    st.download_button(
+        f"Download {filename}",
+        data=tracker_bytes,
+        file_name=filename,
+        mime=EXCEL_MIME,
+        type="primary",
+        use_container_width=True,
+        on_click="ignore",
+    )
+
 def main() -> None:
     st.set_page_config(page_title="Product Hunter Pro", page_icon="🔎", layout="wide")
     st.markdown("""<style>
@@ -303,6 +406,13 @@ def main() -> None:
     config = load_config(_secret_getter)
 
     if not _password_gate(config):
+        return
+
+    with st.sidebar:
+        app_mode = st.radio("Workspace", ["Product Search", "Purchase Tracker"], horizontal=False)
+
+    if app_mode == "Purchase Tracker":
+        _render_purchase_tracker()
         return
 
     st.markdown("""<div class="hero"><h1>Product Hunter Pro</h1><p>AI-assisted product recognition, retailer comparison, nearby supplier leads, technical documents, embedded images, and procurement-ready Excel reports.</p></div>""", unsafe_allow_html=True)
