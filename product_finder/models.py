@@ -50,6 +50,9 @@ class ProductResult:
     raw_source: str = "Google Shopping / SerpApi"
     match_score: float | None = None
     match_grade: str = ""
+    match_confidence: str = ""
+    match_profile: str = ""
+    score_breakdown: str = ""
     best_match: bool = False
     exact_model_match: bool = False
     matched_features: str = ""

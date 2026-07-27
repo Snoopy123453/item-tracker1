@@ -174,7 +174,7 @@ def suggest_workbook_filename(input_records: list[InputRecord]) -> str:
 
 def _add_best_matches_sheet(wb: Workbook, product_results: list[ProductResult]) -> Worksheet:
     ws = wb.create_sheet("Best Matches")
-    headers = ["query", "match_score", "match_grade", "exact_model_match", "title", "seller", "price", "product_link", "matched_features", "missing_features", "differences", "recommendation"]
+    headers = ["query", "match_score", "match_grade", "match_confidence", "match_profile", "exact_model_match", "title", "seller", "price", "product_link", "matched_features", "missing_features", "differences", "score_breakdown", "recommendation"]
     rows = []
     for result in product_results:
         if result.best_match:
@@ -182,7 +182,7 @@ def _add_best_matches_sheet(wb: Workbook, product_results: list[ProductResult]) 
             rows.append(row)
     _write_rows(ws, headers, rows)
     if not rows:
-        ws.append(["No product listings returned", "", "", "", "", "", "", "", "", "", "", ""])
+        ws.append(["No product listings returned"] + [""] * 14)
     _format_table(ws)
     _format_number_columns(ws, set(), {"match_score"})
     header_map = {cell.value: cell.column for cell in ws[1] if cell.value}
@@ -320,7 +320,7 @@ def _build_workbook(*, input_records: list[InputRecord], product_results: list[P
     _format_table(ws_inputs)
     _format_number_columns(ws_inputs, set(), {"confidence"})
 
-    product_headers = ["product_image", "query", "input_source", "rank", "title", "seller", "price", "extracted_price", "delivery", "rating", "reviews", "condition", "snippet", "product_link", "seller_link", "thumbnail", "search_location", "retrieved_at", "raw_source", "best_match", "match_score", "match_grade", "exact_model_match", "matched_features", "missing_features", "differences", "recommendation"]
+    product_headers = ["product_image", "query", "input_source", "rank", "title", "seller", "price", "extracted_price", "delivery", "rating", "reviews", "condition", "snippet", "product_link", "seller_link", "thumbnail", "search_location", "retrieved_at", "raw_source", "best_match", "match_score", "match_grade", "match_confidence", "match_profile", "exact_model_match", "matched_features", "missing_features", "differences", "score_breakdown", "recommendation"]
     product_rows = []
     for result in product_results:
         row = result.to_row(); row["product_image"] = ""; product_rows.append(row)
