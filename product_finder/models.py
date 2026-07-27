@@ -48,6 +48,14 @@ class ProductResult:
     search_location: str = ""
     retrieved_at: str = field(default_factory=now_iso)
     raw_source: str = "Google Shopping / SerpApi"
+    match_score: float | None = None
+    match_grade: str = ""
+    best_match: bool = False
+    exact_model_match: bool = False
+    matched_features: str = ""
+    missing_features: str = ""
+    differences: str = ""
+    recommendation: str = ""
 
     def to_row(self) -> dict[str, Any]:
         return asdict(self)

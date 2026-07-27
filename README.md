@@ -103,7 +103,3 @@ To update an existing Streamlit deployment, upload all files from this project o
 - Added lightweight recent-search history for the active browser session.
 
 Live shelf inventory, authenticated distributor pricing, discontinued-status confirmation, and approved-equivalent recommendations require retailer/manufacturer-specific APIs or accounts. The app labels nearby results and document matches as leads that must be verified before ordering.
-
-## Purchase Tracker workspace (v4)
-
-Upload a Product Hunter Excel report, choose retailer links, edit quantity and price, and generate a separate purchase-tracking workbook. The tracker maintains order status, order numbers, costs, shipping, tax, dates, received quantities, payment method, purchaser, department/cost code, and notes.

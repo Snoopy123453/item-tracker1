@@ -9,6 +9,7 @@ import streamlit as st
 
 from product_finder.config import AppConfig, load_config
 from product_finder.models import InputRecord, ProductResult, SpecDocument, StoreResult
+from product_finder.matching import rank_product_matches
 from product_finder.search import (
     google_lens_queries_from_url,
     google_maps_nearby_stores,
@@ -213,13 +214,16 @@ def _show_product_results(results: list[ProductResult]) -> None:
     dataframe = _records_to_df(results)
     columns = [
         "thumbnail",
+        "best_match",
+        "match_score",
+        "match_grade",
+        "exact_model_match",
         "title",
         "seller",
         "price",
         "delivery",
-        "rating",
-        "reviews",
-        "condition",
+        "differences",
+        "recommendation",
         "query",
         "product_link",
     ]
@@ -229,6 +233,9 @@ def _show_product_results(results: list[ProductResult]) -> None:
         hide_index=True,
         column_config={
             "thumbnail": st.column_config.ImageColumn("Image"),
+            "best_match": st.column_config.CheckboxColumn("Best match"),
+            "match_score": st.column_config.ProgressColumn("Match", min_value=0, max_value=100, format="%.1f%%"),
+            "exact_model_match": st.column_config.CheckboxColumn("Exact model"),
             "product_link": st.column_config.LinkColumn("Retailer page", display_text="Open listing"),
             "rating": st.column_config.NumberColumn("Rating", format="%.1f"),
             "reviews": st.column_config.NumberColumn("Reviews", format="%d"),
@@ -658,7 +665,7 @@ def main() -> None:
             completed += 1
             progress.progress(completed / total_steps, text=f"Searched technical documents for: {query}")
 
-    product_results = _dedupe_products(product_results)
+    product_results = rank_product_matches(_dedupe_products(product_results))
     store_results = _dedupe_stores(store_results)
     progress.progress(1.0, text="Search complete.")
 
@@ -672,6 +679,12 @@ def main() -> None:
     )
 
     st.success(f"Search complete. Your workbook will download as **{filename}**.")
+    best_count = sum(1 for item in product_results if item.best_match)
+    if best_count:
+        st.info(
+            f"Best Match ranked {best_count} search group(s). Scores compare the requested model, manufacturer, "
+            "dimensions, materials, connections, finish, and accessories against each listing. Always verify the official spec sheet before ordering."
+        )
     history_item = {"file": filename, "inputs": len(input_records), "listings": len(product_results), "stores": len(store_results), "documents": len(spec_documents)}
     st.session_state.setdefault("search_history", []).insert(0, history_item)
     st.session_state["search_history"] = st.session_state["search_history"][:10]

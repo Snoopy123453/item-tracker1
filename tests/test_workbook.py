@@ -43,7 +43,7 @@ def test_workbook_structure_and_formula_safety() -> None:
     )
 
     workbook = load_workbook(BytesIO(workbook_bytes), data_only=False)
-    assert workbook.sheetnames == ["Summary", "Inputs", "Product Results", "Nearby Stores", "Spec Documents", "Price Comparison", "Review Notes"]
+    assert workbook.sheetnames == ["Summary", "Inputs", "Product Results", "Nearby Stores", "Spec Documents", "Best Matches", "Price Comparison", "Review Notes"]
     assert workbook["Summary"]["A5"].value == 1
     assert workbook["Summary"]["C5"].value == 1
     assert workbook["Summary"]["E5"].value == 1

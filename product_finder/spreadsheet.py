@@ -10,6 +10,7 @@ from PIL import Image as PILImage
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from openpyxl.utils import get_column_letter, quote_sheetname
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -171,6 +172,29 @@ def suggest_workbook_filename(input_records: list[InputRecord]) -> str:
     return safe_filename(f"{stem[:120]}.xlsx")
 
 
+def _add_best_matches_sheet(wb: Workbook, product_results: list[ProductResult]) -> Worksheet:
+    ws = wb.create_sheet("Best Matches")
+    headers = ["query", "match_score", "match_grade", "exact_model_match", "title", "seller", "price", "product_link", "matched_features", "missing_features", "differences", "recommendation"]
+    rows = []
+    for result in product_results:
+        if result.best_match:
+            row = result.to_row()
+            rows.append(row)
+    _write_rows(ws, headers, rows)
+    if not rows:
+        ws.append(["No product listings returned", "", "", "", "", "", "", "", "", "", "", ""])
+    _format_table(ws)
+    _format_number_columns(ws, set(), {"match_score"})
+    header_map = {cell.value: cell.column for cell in ws[1] if cell.value}
+    score_col = header_map.get("match_score")
+    if score_col and ws.max_row >= 2:
+        letter = get_column_letter(score_col)
+        ws.conditional_formatting.add(f"{letter}2:{letter}{ws.max_row}", CellIsRule(operator="greaterThanOrEqual", formula=["90"], fill=PatternFill("solid", fgColor="C6EFCE")))
+        ws.conditional_formatting.add(f"{letter}2:{letter}{ws.max_row}", CellIsRule(operator="between", formula=["70", "89.999"], fill=PatternFill("solid", fgColor="FFEB9C")))
+        ws.conditional_formatting.add(f"{letter}2:{letter}{ws.max_row}", CellIsRule(operator="lessThan", formula=["70"], fill=PatternFill("solid", fgColor="FFC7CE")))
+    return ws
+
+
 def _add_comparison_sheet(wb: Workbook, product_results: list[ProductResult]) -> Worksheet:
     ws = wb.create_sheet("Price Comparison")
     headers = ["query", "listing_count", "lowest_price", "average_price", "highest_price", "lowest_price_seller", "review_status"]
@@ -236,7 +260,7 @@ def _add_summary_sheet(wb: Workbook, *, product_count: int, store_count: int, sp
     ws["A1"].fill = PatternFill("solid", fgColor=LIGHT_BLUE)
     ws.row_dimensions[1].height = 38
     ws.merge_cells("A2:F2")
-    ws["A2"] = "Retail listings, nearby suppliers, embedded product images, price comparisons, and technical documents."
+    ws["A2"] = "Ranked best matches, retail listings, nearby suppliers, embedded product images, price comparisons, and technical documents."
     ws["A2"].font = SUBTITLE_FONT
 
     cards = [
@@ -296,14 +320,25 @@ def _build_workbook(*, input_records: list[InputRecord], product_results: list[P
     _format_table(ws_inputs)
     _format_number_columns(ws_inputs, set(), {"confidence"})
 
-    product_headers = ["product_image", "query", "input_source", "rank", "title", "seller", "price", "extracted_price", "delivery", "rating", "reviews", "condition", "snippet", "product_link", "seller_link", "thumbnail", "search_location", "retrieved_at", "raw_source"]
+    product_headers = ["product_image", "query", "input_source", "rank", "title", "seller", "price", "extracted_price", "delivery", "rating", "reviews", "condition", "snippet", "product_link", "seller_link", "thumbnail", "search_location", "retrieved_at", "raw_source", "best_match", "match_score", "match_grade", "exact_model_match", "matched_features", "missing_features", "differences", "recommendation"]
     product_rows = []
     for result in product_results:
         row = result.to_row(); row["product_image"] = ""; product_rows.append(row)
     ws_products = wb.create_sheet("Product Results")
     _write_rows(ws_products, product_headers, product_rows)
     _format_table(ws_products)
-    _format_number_columns(ws_products, {"extracted_price"}, {"rating", "reviews"})
+    _format_number_columns(ws_products, {"extracted_price"}, {"rating", "reviews", "match_score"})
+    product_header_map = {cell.value: cell.column for cell in ws_products[1] if cell.value}
+    match_col = product_header_map.get("match_score")
+    best_col = product_header_map.get("best_match")
+    if match_col and ws_products.max_row >= 2:
+        letter = get_column_letter(match_col)
+        ws_products.conditional_formatting.add(f"{letter}2:{letter}{ws_products.max_row}", CellIsRule(operator="greaterThanOrEqual", formula=["90"], fill=PatternFill("solid", fgColor="C6EFCE")))
+        ws_products.conditional_formatting.add(f"{letter}2:{letter}{ws_products.max_row}", CellIsRule(operator="between", formula=["70", "89.999"], fill=PatternFill("solid", fgColor="FFEB9C")))
+        ws_products.conditional_formatting.add(f"{letter}2:{letter}{ws_products.max_row}", CellIsRule(operator="lessThan", formula=["70"], fill=PatternFill("solid", fgColor="FFC7CE")))
+    if best_col and ws_products.max_row >= 2:
+        best_letter = get_column_letter(best_col)
+        ws_products.conditional_formatting.add(f"A2:AA{ws_products.max_row}", FormulaRule(formula=[f'${best_letter}2=TRUE'], fill=PatternFill("solid", fgColor="E2F0D9")))
     image_count = _embed_product_images(ws_products, product_results)
 
     store_headers = ["query", "rank", "title", "store_type", "address", "phone", "rating", "reviews", "hours", "website", "directions", "maps_link", "search_location", "retrieved_at", "raw_source"]
@@ -317,6 +352,7 @@ def _build_workbook(*, input_records: list[InputRecord], product_results: list[P
     _write_rows(ws_specs, spec_headers, [result.to_row() for result in spec_documents])
     _format_table(ws_specs)
 
+    _add_best_matches_sheet(wb, product_results)
     _add_comparison_sheet(wb, product_results)
     _add_notes_sheet(wb)
     dashboard = _add_summary_sheet(wb, product_count=len(product_results), store_count=len(store_results), spec_count=len(spec_documents), image_count=image_count, input_count=len(input_records), location=location, run_notes=run_notes, report_title=report_title)
