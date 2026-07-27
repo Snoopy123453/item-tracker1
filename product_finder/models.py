@@ -73,3 +73,23 @@ class StoreResult:
 
     def to_row(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class SpecDocument:
+    query: str
+    rank: int
+    title: str
+    document_type: str = "Spec sheet"
+    source_domain: str = ""
+    link: str = ""
+    displayed_link: str = ""
+    snippet: str = ""
+    official_source: bool = False
+    pdf_link: bool = False
+    match_confidence: str = "Possible"
+    retrieved_at: str = field(default_factory=now_iso)
+    raw_source: str = "Google Search / SerpApi"
+
+    def to_row(self) -> dict[str, Any]:
+        return asdict(self)

@@ -8,11 +8,12 @@ import pandas as pd
 import streamlit as st
 
 from product_finder.config import AppConfig, load_config
-from product_finder.models import InputRecord, ProductResult, StoreResult
+from product_finder.models import InputRecord, ProductResult, SpecDocument, StoreResult
 from product_finder.search import (
     google_lens_queries_from_url,
     google_maps_nearby_stores,
     google_shopping_search,
+    google_spec_sheet_search,
 )
 from product_finder.spreadsheet import create_product_workbook_bytes
 from product_finder.utils import clean_text, unique_keep_order
@@ -267,18 +268,43 @@ def _show_store_results(results: list[StoreResult]) -> None:
     )
 
 
+
+def _show_spec_documents(results: list[SpecDocument]) -> None:
+    st.subheader("Technical documents")
+    if not results:
+        st.info("No spec sheets or technical documents were returned, or document search was disabled.")
+        return
+    dataframe = _records_to_df(results)
+    columns = ["title", "document_type", "source_domain", "match_confidence", "official_source", "pdf_link", "link", "query"]
+    st.dataframe(
+        dataframe[[column for column in columns if column in dataframe.columns]],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "link": st.column_config.LinkColumn("Document", display_text="Open document"),
+            "official_source": st.column_config.CheckboxColumn("Likely official"),
+            "pdf_link": st.column_config.CheckboxColumn("PDF"),
+        },
+    )
+
 def main() -> None:
-    st.set_page_config(page_title="Product Hunter", page_icon="🛒", layout="wide")
+    st.set_page_config(page_title="Product Hunter", page_icon="🔎", layout="wide")
+    st.markdown("""<style>
+    .stApp {background: linear-gradient(180deg,#f4f8fc 0%,#ffffff 45%);}
+    .block-container {max-width: 1380px; padding-top: 2rem;}
+    h1,h2,h3 {color:#17324d;}
+    [data-testid="stSidebar"] {background:#edf4fb; border-right:1px solid #d7e4f0;}
+    .hero {padding:1.4rem 1.6rem;border-radius:18px;background:linear-gradient(120deg,#17324d,#2e75b6);color:white;margin-bottom:1.25rem;box-shadow:0 10px 28px rgba(23,50,77,.16)}
+    .hero h1{color:white;margin:0;font-size:2.25rem}.hero p{margin:.5rem 0 0;color:#eaf3fb;font-size:1.05rem}
+    div[data-testid="stMetric"] {background:white;border:1px solid #dbe7f2;padding:1rem;border-radius:14px;box-shadow:0 5px 16px rgba(23,50,77,.06)}
+    div.stButton > button, div.stDownloadButton > button {border-radius:10px;font-weight:700;}
+    </style>""", unsafe_allow_html=True)
     config = load_config(_secret_getter)
 
     if not _password_gate(config):
         return
 
-    st.title(APP_TITLE)
-    st.write(
-        "Search from typed descriptions, uploaded product photos, or public image URLs. "
-        "The app finds online listings and nearby retailer leads, then creates an Excel workbook."
-    )
+    st.markdown("""<div class="hero"><h1>Product Hunter</h1><p>Recognize products from images or text, compare retailers, find nearby suppliers and technical documents, then export a polished Excel workbook with product images.</p></div>""", unsafe_allow_html=True)
 
     serpapi_api_key, openai_api_key = _resolve_api_keys(config)
 
@@ -288,8 +314,10 @@ def main() -> None:
         location = st.text_input("City, state, or ZIP", value=config.default_location)
         include_online = st.checkbox("Online and shipping listings", value=True)
         include_nearby = st.checkbox("Nearby retailer leads", value=True)
+        include_specs = st.checkbox("Spec sheets and technical documents", value=True)
         max_product_results = st.slider("Listings per search term", min_value=3, max_value=20, value=8)
         max_store_results = st.slider("Nearby stores per search term", min_value=1, max_value=10, value=4)
+        max_spec_results = st.slider("Technical documents per search term", min_value=1, max_value=8, value=3)
         max_queries_per_input = st.slider("Search terms per image/input", min_value=1, max_value=4, value=2)
         with st.expander("Advanced"):
             country_code = st.text_input("Country code", value=config.country_code).lower().strip() or "us"
@@ -339,8 +367,8 @@ def main() -> None:
         st.info("Add a text search, image upload, or public image URL, then start the search.")
         return
 
-    if not include_online and not include_nearby:
-        st.error("Enable online listings, nearby retailer leads, or both.")
+    if not include_online and not include_nearby and not include_specs:
+        st.error("Enable online listings, nearby retailer leads, technical documents, or a combination.")
         return
 
     text_queries = _split_lines(text_searches)
@@ -363,6 +391,7 @@ def main() -> None:
     input_records: list[InputRecord] = []
     product_results: list[ProductResult] = []
     store_results: list[StoreResult] = []
+    spec_documents: list[SpecDocument] = []
     run_notes: list[str] = []
 
     with st.status("Recognizing products and building search terms...", expanded=True) as status:
@@ -428,6 +457,7 @@ def main() -> None:
             input_records=input_records,
             product_results=[],
             store_results=[],
+            spec_documents=[],
             location=location,
             run_notes=" | ".join(unique_keep_order(run_notes)),
         )
@@ -445,7 +475,7 @@ def main() -> None:
         st.warning("No usable search terms were generated. Add clearer text or more specific image hints.")
         return
 
-    steps_per_job = int(include_online) + int(include_nearby)
+    steps_per_job = int(include_online) + int(include_nearby) + int(include_specs)
     total_steps = len(search_jobs) * steps_per_job
     completed = 0
     progress = st.progress(0, text="Searching retailers...")
@@ -490,6 +520,24 @@ def main() -> None:
             completed += 1
             progress.progress(completed / total_steps, text=f"Searched nearby retailers for: {query}")
 
+        if include_specs:
+            try:
+                spec_documents.extend(
+                    google_spec_sheet_search(
+                        query=query,
+                        api_key=serpapi_api_key,
+                        country_code=country_code,
+                        language=language,
+                        max_results=max_spec_results,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                message = f"Technical-document search failed for '{query}': {exc}"
+                st.warning(message)
+                run_notes.append(message)
+            completed += 1
+            progress.progress(completed / total_steps, text=f"Searched technical documents for: {query}")
+
     product_results = _dedupe_products(product_results)
     store_results = _dedupe_stores(store_results)
     progress.progress(1.0, text="Search complete.")
@@ -498,18 +546,21 @@ def main() -> None:
         input_records=input_records,
         product_results=product_results,
         store_results=store_results,
+        spec_documents=spec_documents,
         location=location,
         run_notes=" | ".join(unique_keep_order(run_notes)),
     )
 
     st.success("Search complete. Review the results below and download the Excel workbook.")
-    metric_one, metric_two, metric_three = st.columns(3)
+    metric_one, metric_two, metric_three, metric_four = st.columns(4)
     metric_one.metric("Inputs", len(input_records))
     metric_two.metric("Product listings", len(product_results))
     metric_three.metric("Nearby retailers", len(store_results))
+    metric_four.metric("Technical documents", len(spec_documents))
 
     _show_product_results(product_results)
     _show_store_results(store_results)
+    _show_spec_documents(spec_documents)
 
     st.download_button(
         "Download Excel spreadsheet",

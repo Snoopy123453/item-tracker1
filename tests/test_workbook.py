@@ -43,15 +43,15 @@ def test_workbook_structure_and_formula_safety() -> None:
     )
 
     workbook = load_workbook(BytesIO(workbook_bytes), data_only=False)
-    assert workbook.sheetnames == ["Summary", "Inputs", "Product Results", "Nearby Stores"]
-    assert workbook["Summary"]["B6"].value == 1
-    assert workbook["Summary"]["B7"].value == 1
-    assert workbook["Summary"]["B8"].value == 1
+    assert workbook.sheetnames == ["Summary", "Inputs", "Product Results", "Nearby Stores", "Spec Documents"]
+    assert workbook["Summary"]["A5"].value == 1
+    assert workbook["Summary"]["C5"].value == 1
+    assert workbook["Summary"]["E5"].value == 1
 
     assert workbook["Inputs"]["B2"].value == "'=2+2"
-    assert workbook["Product Results"]["D2"].value == "'@SUM(A1:A2)"
+    assert workbook["Product Results"]["E2"].value == "'@SUM(A1:A2)"
     assert workbook["Nearby Stores"]["C2"].value == "'+Example Retailer"
-    assert workbook["Product Results"]["M2"].hyperlink.target == "https://example.com/product"
+    assert workbook["Product Results"]["N2"].hyperlink.target == "https://example.com/product"
 
     for worksheet in workbook.worksheets:
         for row in worksheet.iter_rows():

@@ -5,28 +5,40 @@ from pathlib import Path
 import re
 from typing import Any, Iterable
 
+import requests
+from PIL import Image as PILImage
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.drawing.image import Image as XLImage
+from openpyxl.styles import Alignment, Border, Font, GradientFill, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from .models import InputRecord, ProductResult, StoreResult, now_iso
+from .models import InputRecord, ProductResult, SpecDocument, StoreResult, now_iso
 from .utils import ensure_directory, safe_filename
 
-HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
-HEADER_FONT = Font(color="FFFFFF", bold=True)
-TITLE_FONT = Font(size=16, bold=True, color="1F4E78")
-SUBTITLE_FONT = Font(size=11, italic=True, color="666666")
-IMPORTED_FONT = Font(color="008000")
-STATIC_FONT = Font(color="666666")
-CAUTION_FILL = PatternFill("solid", fgColor="FCE4D6")
-TEAL_FILL = PatternFill("solid", fgColor="DDEBF7")
+NAVY = "17324D"
+BLUE = "2E75B6"
+LIGHT_BLUE = "DCEAF7"
+PALE_BLUE = "EFF6FC"
+GREEN = "008000"
+GRAY = "666666"
+WHITE = "FFFFFF"
+ORANGE = "FCE4D6"
+TEAL = "DDEBF7"
+HEADER_FILL = PatternFill("solid", fgColor=NAVY)
+HEADER_FONT = Font(color=WHITE, bold=True)
+TITLE_FONT = Font(size=20, bold=True, color=NAVY)
+SUBTITLE_FONT = Font(size=11, italic=True, color=GRAY)
+IMPORTED_FONT = Font(color=GREEN)
+STATIC_FONT = Font(color=GRAY)
+CAUTION_FILL = PatternFill("solid", fgColor=ORANGE)
+TEAL_FILL = PatternFill("solid", fgColor=TEAL)
 THIN_BLUE = Side(style="thin", color="9EADCC")
 INVALID_XML_CHARS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+USER_AGENT = "ProductHunterWebApp/2.0"
 
 
 def _excel_safe(value: Any) -> Any:
-    """Prevent malformed XML and spreadsheet-formula injection in imported text."""
     if not isinstance(value, str):
         return value
     cleaned = INVALID_XML_CHARS.sub("", value)
@@ -52,9 +64,11 @@ def _format_table(ws: Worksheet, *, freeze: str = "A2") -> None:
         cell.font = HEADER_FONT
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border = Border(bottom=THIN_BLUE)
-    for row in ws.iter_rows(min_row=2):
+    for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
+        fill = PatternFill("solid", fgColor=PALE_BLUE) if row_idx % 2 == 0 else PatternFill(fill_type=None)
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
+            cell.fill = fill
             if isinstance(cell.value, str) and cell.value.startswith(("https://", "http://")):
                 cell.hyperlink = cell.value
                 cell.style = "Hyperlink"
@@ -62,7 +76,7 @@ def _format_table(ws: Worksheet, *, freeze: str = "A2") -> None:
                 cell.font = IMPORTED_FONT
     for col_idx, column_cells in enumerate(ws.columns, start=1):
         values = [str(cell.value) if cell.value is not None else "" for cell in column_cells]
-        max_len = min(max([len(value) for value in values] + [10]), 58)
+        max_len = min(max([len(value) for value in values] + [10]), 52)
         ws.column_dimensions[get_column_letter(col_idx)].width = max(12, max_len + 2)
     ws.row_dimensions[1].height = 34
 
@@ -81,188 +95,164 @@ def _format_number_columns(ws: Worksheet, currency_headers: set[str], number_hea
                 ws.cell(row=row, column=col).number_format = '#,##0.0'
 
 
-def _add_summary_sheet(
-    wb: Workbook,
-    *,
-    product_count: int,
-    store_count: int,
-    input_count: int,
-    location: str,
-    run_notes: str,
-) -> Worksheet:
+def _download_thumbnail(url: str, timeout: int = 8) -> BytesIO | None:
+    if not url.startswith(("https://", "http://")):
+        return None
+    try:
+        response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=(4, timeout))
+        response.raise_for_status()
+        if len(response.content) > 4_000_000:
+            return None
+        image = PILImage.open(BytesIO(response.content)).convert("RGB")
+        image.thumbnail((180, 120))
+        output = BytesIO()
+        image.save(output, format="PNG", optimize=True)
+        output.seek(0)
+        return output
+    except Exception:
+        return None
+
+
+def _embed_product_images(ws: Worksheet, product_results: list[ProductResult]) -> int:
+    if not product_results:
+        return 0
+    header_map = {cell.value: cell.column for cell in ws[1] if cell.value}
+    image_col = header_map.get("product_image")
+    if not image_col:
+        return 0
+    ws.column_dimensions[get_column_letter(image_col)].width = 24
+    count = 0
+    for row_idx, result in enumerate(product_results, start=2):
+        stream = _download_thumbnail(result.thumbnail)
+        ws.row_dimensions[row_idx].height = 92
+        if stream is None:
+            ws.cell(row=row_idx, column=image_col, value="Image unavailable")
+            ws.cell(row=row_idx, column=image_col).font = STATIC_FONT
+            continue
+        image = XLImage(stream)
+        image.width = 120
+        image.height = 80
+        image.anchor = ws.cell(row=row_idx, column=image_col).coordinate
+        ws.add_image(image)
+        count += 1
+    return count
+
+
+def _add_summary_sheet(wb: Workbook, *, product_count: int, store_count: int, spec_count: int, image_count: int, input_count: int, location: str, run_notes: str) -> Worksheet:
     ws = wb.active
     ws.title = "Summary"
     ws.sheet_view.showGridLines = False
-    ws["A1"] = "Product Finder Run Summary"
+    ws.merge_cells("A1:F1")
+    ws["A1"] = "PRODUCT HUNTER — SEARCH DASHBOARD"
     ws["A1"].font = TITLE_FONT
-    ws["A2"] = (
-        "Auto-generated by Product Hunter. Verify price, shipping, availability, and seller details before purchasing."
-    )
+    ws["A1"].alignment = Alignment(horizontal="left", vertical="center")
+    ws["A1"].fill = PatternFill("solid", fgColor=LIGHT_BLUE)
+    ws.row_dimensions[1].height = 38
+    ws.merge_cells("A2:F2")
+    ws["A2"] = "Retail listings, nearby suppliers, product images, and technical documents in one workbook."
     ws["A2"].font = SUBTITLE_FONT
 
-    rows = [
-        ("Generated at", now_iso()),
-        ("Search location", location or "Not specified"),
-        ("Inputs processed", input_count),
-        ("Product listings found", product_count),
-        ("Nearby/local store results found", store_count),
-        ("Run notes", run_notes or ""),
+    cards = [
+        ("A4", "Inputs", input_count),
+        ("C4", "Listings", product_count),
+        ("E4", "Nearby stores", store_count),
+        ("A7", "Spec documents", spec_count),
+        ("C7", "Images embedded", image_count),
+        ("E7", "Search location", location or "Not specified"),
     ]
-    start = 4
-    for offset, (label, value) in enumerate(rows):
-        row = start + offset
-        ws.cell(row=row, column=1, value=label)
-        ws.cell(row=row, column=2, value=_excel_safe(value))
-        ws.cell(row=row, column=1).font = Font(bold=True, color="666666")
-        ws.cell(row=row, column=2).font = STATIC_FONT if label in {"Generated at", "Search location"} else IMPORTED_FONT
-        ws.cell(row=row, column=1).fill = TEAL_FILL
-        ws.cell(row=row, column=2).alignment = Alignment(wrap_text=True, vertical="top")
+    for cell_ref, label, value in cards:
+        col = ws[cell_ref].column
+        row = ws[cell_ref].row
+        ws.merge_cells(start_row=row, start_column=col, end_row=row, end_column=col + 1)
+        ws.cell(row=row, column=col, value=label)
+        ws.cell(row=row, column=col).font = Font(bold=True, color=WHITE, size=11)
+        ws.cell(row=row, column=col).fill = HEADER_FILL
+        ws.cell(row=row, column=col).alignment = Alignment(horizontal="center")
+        ws.merge_cells(start_row=row + 1, start_column=col, end_row=row + 1, end_column=col + 1)
+        ws.cell(row=row + 1, column=col, value=_excel_safe(value))
+        ws.cell(row=row + 1, column=col).font = Font(bold=True, color=NAVY, size=16)
+        ws.cell(row=row + 1, column=col).fill = TEAL_FILL
+        ws.cell(row=row + 1, column=col).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    ws["A12"] = "Important limitation"
-    ws["A12"].font = Font(bold=True, color="9C6500")
-    ws["A12"].fill = CAUTION_FILL
-    ws["B12"] = (
-        "Retailer pages change quickly. Nearby store results identify possible stores, not guaranteed live shelf stock "
-        "unless the linked retailer explicitly shows availability."
+    ws.merge_cells("A11:F11")
+    ws["A11"] = "Run notes"
+    ws["A11"].font = HEADER_FONT
+    ws["A11"].fill = HEADER_FILL
+    ws.merge_cells("A12:F13")
+    ws["A12"] = _excel_safe(run_notes or "No warnings were recorded.")
+    ws["A12"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws["A12"].fill = PatternFill("solid", fgColor=PALE_BLUE)
+
+    ws.merge_cells("A15:F15")
+    ws["A15"] = "Important"
+    ws["A15"].font = Font(bold=True, color="9C6500")
+    ws["A15"].fill = CAUTION_FILL
+    ws.merge_cells("A16:F18")
+    ws["A16"] = (
+        "Retail prices and availability change quickly. Nearby-store results are leads, not guaranteed shelf inventory. "
+        "Spec-sheet matches should be checked against the exact manufacturer and model number before use."
     )
-    ws["B12"].alignment = Alignment(wrap_text=True, vertical="top")
-    ws["B12"].fill = CAUTION_FILL
-
-    ws.column_dimensions["A"].width = 28
-    ws.column_dimensions["B"].width = 95
-    ws.row_dimensions[12].height = 48
+    ws["A16"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws["A16"].fill = CAUTION_FILL
+    for col in range(1, 7):
+        ws.column_dimensions[get_column_letter(col)].width = 18
     return ws
 
 
-def _build_workbook(
-    *,
-    input_records: list[InputRecord],
-    product_results: list[ProductResult],
-    store_results: list[StoreResult],
-    location: str,
-    run_notes: str = "",
-) -> Workbook:
+def _build_workbook(*, input_records: list[InputRecord], product_results: list[ProductResult], store_results: list[StoreResult], spec_documents: list[SpecDocument], location: str, run_notes: str = "") -> Workbook:
     wb = Workbook()
     wb.properties.title = "Product Hunter Search Results"
-    wb.properties.subject = "Retail product and nearby store search results"
+    wb.properties.subject = "Retail products, nearby stores, product images, and specification documents"
     wb.properties.creator = "Product Hunter Web App"
-    _add_summary_sheet(
-        wb,
-        product_count=len(product_results),
-        store_count=len(store_results),
-        input_count=len(input_records),
-        location=location,
-        run_notes=run_notes,
-    )
 
-    input_headers = [
-        "input_type",
-        "label",
-        "extracted_product_name",
-        "brand",
-        "category",
-        "confidence",
-        "generated_queries",
-        "notes",
-        "source_url",
-        "retrieved_at",
-    ]
+    input_headers = ["input_type", "label", "extracted_product_name", "brand", "category", "confidence", "generated_queries", "notes", "source_url", "retrieved_at"]
     ws_inputs = wb.create_sheet("Inputs")
     _write_rows(ws_inputs, input_headers, [record.to_row() for record in input_records])
     _format_table(ws_inputs)
     _format_number_columns(ws_inputs, set(), {"confidence"})
 
-    product_headers = [
-        "query",
-        "input_source",
-        "rank",
-        "title",
-        "seller",
-        "price",
-        "extracted_price",
-        "delivery",
-        "rating",
-        "reviews",
-        "condition",
-        "snippet",
-        "product_link",
-        "seller_link",
-        "thumbnail",
-        "search_location",
-        "retrieved_at",
-        "raw_source",
-    ]
+    product_headers = ["product_image", "query", "input_source", "rank", "title", "seller", "price", "extracted_price", "delivery", "rating", "reviews", "condition", "snippet", "product_link", "seller_link", "thumbnail", "search_location", "retrieved_at", "raw_source"]
+    product_rows = []
+    for result in product_results:
+        row = result.to_row()
+        row["product_image"] = ""
+        product_rows.append(row)
     ws_products = wb.create_sheet("Product Results")
-    _write_rows(ws_products, product_headers, [result.to_row() for result in product_results])
+    _write_rows(ws_products, product_headers, product_rows)
     _format_table(ws_products)
     _format_number_columns(ws_products, {"extracted_price"}, {"rating", "reviews"})
+    image_count = _embed_product_images(ws_products, product_results)
 
-    store_headers = [
-        "query",
-        "rank",
-        "title",
-        "store_type",
-        "address",
-        "phone",
-        "rating",
-        "reviews",
-        "hours",
-        "website",
-        "directions",
-        "maps_link",
-        "search_location",
-        "retrieved_at",
-        "raw_source",
-    ]
+    store_headers = ["query", "rank", "title", "store_type", "address", "phone", "rating", "reviews", "hours", "website", "directions", "maps_link", "search_location", "retrieved_at", "raw_source"]
     ws_stores = wb.create_sheet("Nearby Stores")
     _write_rows(ws_stores, store_headers, [result.to_row() for result in store_results])
     _format_table(ws_stores)
     _format_number_columns(ws_stores, set(), {"rating", "reviews"})
 
+    spec_headers = ["query", "rank", "title", "document_type", "source_domain", "link", "displayed_link", "snippet", "official_source", "pdf_link", "match_confidence", "retrieved_at", "raw_source"]
+    ws_specs = wb.create_sheet("Spec Documents")
+    _write_rows(ws_specs, spec_headers, [result.to_row() for result in spec_documents])
+    _format_table(ws_specs)
+
+    dashboard = _add_summary_sheet(wb, product_count=len(product_results), store_count=len(store_results), spec_count=len(spec_documents), image_count=image_count, input_count=len(input_records), location=location, run_notes=run_notes)
+    wb._sheets.remove(dashboard)
+    wb._sheets.insert(0, dashboard)
+    wb.active = 0
     return wb
 
 
-def create_product_workbook_bytes(
-    *,
-    input_records: list[InputRecord],
-    product_results: list[ProductResult],
-    store_results: list[StoreResult],
-    location: str,
-    run_notes: str = "",
-) -> tuple[str, bytes]:
-    """Create a spreadsheet entirely in memory for safe multi-user hosting."""
+def create_product_workbook_bytes(*, input_records: list[InputRecord], product_results: list[ProductResult], store_results: list[StoreResult], spec_documents: list[SpecDocument] | None = None, location: str, run_notes: str = "") -> tuple[str, bytes]:
     filename = safe_filename(f"product_search_results_{now_iso().replace(':', '-')}.xlsx")
-    wb = _build_workbook(
-        input_records=input_records,
-        product_results=product_results,
-        store_results=store_results,
-        location=location,
-        run_notes=run_notes,
-    )
+    wb = _build_workbook(input_records=input_records, product_results=product_results, store_results=store_results, spec_documents=spec_documents or [], location=location, run_notes=run_notes)
     buffer = BytesIO()
     wb.save(buffer)
     buffer.seek(0)
     return filename, buffer.getvalue()
 
 
-def create_product_workbook(
-    *,
-    input_records: list[InputRecord],
-    product_results: list[ProductResult],
-    store_results: list[StoreResult],
-    location: str,
-    output_dir: str | Path = "exports",
-    run_notes: str = "",
-) -> Path:
-    """Create the same workbook on disk for local or offline use."""
+def create_product_workbook(*, input_records: list[InputRecord], product_results: list[ProductResult], store_results: list[StoreResult], spec_documents: list[SpecDocument] | None = None, location: str, output_dir: str | Path = "exports", run_notes: str = "") -> Path:
     output_path = ensure_directory(output_dir)
-    filename, workbook_bytes = create_product_workbook_bytes(
-        input_records=input_records,
-        product_results=product_results,
-        store_results=store_results,
-        location=location,
-        run_notes=run_notes,
-    )
+    filename, workbook_bytes = create_product_workbook_bytes(input_records=input_records, product_results=product_results, store_results=store_results, spec_documents=spec_documents or [], location=location, run_notes=run_notes)
     workbook_path = output_path / filename
     workbook_path.write_bytes(workbook_bytes)
     return workbook_path

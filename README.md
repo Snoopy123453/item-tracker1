@@ -83,3 +83,12 @@ Uploaded images and search requests are sent to configured external API provider
 - SerpApi Google Lens API: https://serpapi.com/google-lens-api
 - SerpApi Google Shopping API: https://serpapi.com/google-shopping-api
 - SerpApi Google Maps local results: https://serpapi.com/maps-local-results
+
+## Version 2 enhancements
+
+- Product thumbnails are downloaded server-side and embedded directly in the Excel `Product Results` sheet when available.
+- The workbook includes a redesigned dashboard, alternating row shading, better sizing, clickable links, and a dedicated `Spec Documents` sheet.
+- Optional technical-document search finds likely product spec sheets, submittals, installation manuals, and other PDFs through SerpApi Google Search.
+- The Streamlit interface includes a polished branded header, improved cards, and clearer search controls.
+
+To update an existing Streamlit deployment, upload all files from this project over the matching files in the GitHub repository, commit the changes, and reboot the app. Existing Streamlit secrets remain in the hosting dashboard and should not be committed to GitHub.

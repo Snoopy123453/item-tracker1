@@ -241,3 +241,65 @@ def google_maps_nearby_stores(
             )
         )
     return results
+
+
+def google_spec_sheet_search(
+    *,
+    query: str,
+    api_key: str,
+    country_code: str = "us",
+    language: str = "en",
+    max_results: int = 5,
+) -> list["SpecDocument"]:
+    """Find likely product spec sheets, submittals, and technical PDFs."""
+    from urllib.parse import urlparse
+    from .models import SpecDocument
+
+    if max_results <= 0:
+        return []
+    search_query = f'"{query}" (spec sheet OR submittal OR technical data OR installation manual) filetype:pdf'
+    data = _serpapi_get(
+        {
+            "engine": "google",
+            "q": search_query,
+            "gl": country_code,
+            "hl": language,
+            "num": min(max_results * 2, 10),
+            "api_key": api_key,
+        }
+    )
+    items = data.get("organic_results") or []
+    results: list[SpecDocument] = []
+    query_tokens = [token.lower() for token in query.replace("/", " ").replace("-", " ").split() if len(token) > 2]
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        link = clean_text(item.get("link"))
+        title = clean_text(item.get("title"))
+        snippet = clean_text(item.get("snippet"))
+        displayed = clean_text(item.get("displayed_link"))
+        if not link:
+            continue
+        domain = urlparse(link).netloc.lower().removeprefix("www.")
+        text = f"{title} {snippet} {link}".lower()
+        token_hits = sum(1 for token in query_tokens if token in text)
+        confidence = "Exact" if query_tokens and token_hits >= max(1, len(query_tokens) - 1) else "Likely" if token_hits else "Possible"
+        doc_type = "Installation manual" if "installation" in text or "manual" in text else "Submittal" if "submittal" in text else "Spec sheet"
+        results.append(
+            SpecDocument(
+                query=query,
+                rank=len(results) + 1,
+                title=title,
+                document_type=doc_type,
+                source_domain=domain,
+                link=link,
+                displayed_link=displayed,
+                snippet=snippet,
+                official_source=bool(query_tokens and any(token in domain for token in query_tokens[:2])),
+                pdf_link=link.lower().split("?")[0].endswith(".pdf"),
+                match_confidence=confidence,
+            )
+        )
+        if len(results) >= max_results:
+            break
+    return results
