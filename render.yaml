@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: product-hunter
+    runtime: docker
+    plan: free
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: SERPAPI_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: APP_PASSWORD
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4.1-mini
+      - key: DEFAULT_LOCATION
+        value: Los Angeles, CA
+      - key: COUNTRY_CODE
+        value: us
+      - key: LANGUAGE
+        value: en
+      - key: ALLOW_USER_API_KEYS
+        value: "false"
+      - key: ALLOW_PUBLIC_WITH_SERVER_KEYS
+        value: "false"
+      - key: MAX_UPLOAD_MB
+        value: "10"
+      - key: MAX_INPUTS
+        value: "12"
+      - key: MAX_SEARCH_JOBS
+        value: "24"
