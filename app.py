@@ -21,6 +21,10 @@ from product_finder.spreadsheet import create_product_workbook_bytes
 from product_finder.purchase_tracker import extract_purchase_candidates, create_purchase_tracker_bytes
 from product_finder.utils import clean_text, unique_keep_order
 from product_finder.vision import analyze_uploaded_image
+from product_finder.exact_image_match import build_visual_fingerprint, visually_verify_candidates
+from product_finder.spec_compare import (
+    compare_spec_documents, comparison_rows, create_spec_comparison_workbook, extract_spec_document,
+)
 from product_finder.project_intelligence import (
     consolidate_items, create_project_backup, create_project_workbook,
     create_submittal_zip, extract_schedule_items, load_project_backup,
@@ -636,6 +640,118 @@ def _render_procurement_control_center() -> None:
         st.info("The workbook includes a dashboard, products, requirements, review queue, data-health findings, document register, audit log, and a draft PO sheet. Draft purchasing outputs still require human verification.")
     st.session_state.control_v8=data
 
+
+
+def _render_spec_sheet_compare(config: AppConfig, openai_api_key: str) -> None:
+    st.markdown("""<div class="hero"><h1>Spec Sheet Compare</h1><p>Upload the original required specification and one or more candidate product documents. The app extracts technical attributes, compares every required value, flags hard conflicts, and creates an evidence-backed Excel report.</p></div>""", unsafe_allow_html=True)
+    with st.expander("How verification works", expanded=False):
+        st.markdown("Missing information is marked **Not Confirmed**, never treated as a match. Explicit conflicts in dimensions, connections, voltage, capacity, material, finish, certifications, mounting, or required accessories can disqualify a candidate. Final purchasing approval should still be completed by a qualified reviewer.")
+    original_file = st.file_uploader("Original / required spec sheet", type=["pdf","png","jpg","jpeg","webp"], key="spec_original")
+    candidate_files = st.file_uploader("Candidate spec sheets", type=["pdf","png","jpg","jpeg","webp"], accept_multiple_files=True, key="spec_candidates")
+    notes = st.text_area("Optional comparison instructions", placeholder="Exact manufacturer and model required; no substitutions. Treat 5-inch top, no-hub outlet, trap-primer tap, and clamping flange as mandatory.")
+    run = st.button("Compare specification sheets", type="primary", use_container_width=True)
+    if not run:
+        return
+    if not openai_api_key:
+        st.error("OpenAI API key is required for document extraction and comparison.")
+        return
+    if original_file is None:
+        st.error("Upload the original required spec sheet.")
+        return
+    if not candidate_files:
+        st.error("Upload at least one candidate spec sheet.")
+        return
+    try:
+        with st.status("Extracting the original specification...", expanded=True) as status:
+            original = extract_spec_document(data=original_file.getvalue(), filename=original_file.name, openai_api_key=openai_api_key, model=config.openai_model)
+            if notes.strip():
+                original["comparison_instructions"] = notes.strip()
+            st.write(f"Extracted {len(original.get('attributes', []))} original attributes.")
+            results=[]
+            candidate_docs=[]
+            for uploaded in candidate_files[:10]:
+                st.write(f"Reading candidate: {uploaded.name}")
+                try:
+                    candidate=extract_spec_document(data=uploaded.getvalue(), filename=uploaded.name, openai_api_key=openai_api_key, model=config.openai_model)
+                    candidate_docs.append(candidate)
+                    results.append(compare_spec_documents(original=original, candidate=candidate, openai_api_key=openai_api_key, model=config.openai_model))
+                except Exception as exc:
+                    st.warning(f"Could not compare {uploaded.name}: {exc}")
+            status.update(label="Specification comparison complete.", state="complete")
+    except Exception as exc:
+        st.error(f"Could not read the original spec sheet: {exc}")
+        return
+    if not results:
+        st.error("No candidate documents could be compared.")
+        return
+    ranked=sorted(results,key=lambda r:(r.hard_conflicts,-r.compatibility_score,-r.evidence_coverage))
+    best=ranked[0]
+    a,b,c,d=st.columns(4)
+    a.metric("Candidates",len(ranked)); b.metric("Best compatibility",f"{best.compatibility_score:.1f}%"); c.metric("Evidence coverage",f"{best.evidence_coverage:.1f}%"); d.metric("Hard conflicts",best.hard_conflicts)
+    if best.status in {"Exact Specification Match","Technical Equivalent"}:
+        st.success(f"Top result: {best.candidate_name} — {best.status}")
+    elif best.status == "Not Compatible":
+        st.error(f"Top result still has technical conflicts: {best.candidate_name}")
+    else:
+        st.warning(f"Top result needs verification: {best.candidate_name}")
+    summary_rows=[{"candidate":r.candidate_name,"manufacturer":r.manufacturer,"model":r.model,"status":r.status,"compatibility":r.compatibility_score,"evidence_coverage":r.evidence_coverage,"hard_conflicts":r.hard_conflicts,"unconfirmed_required":r.unconfirmed_required,"summary":r.summary} for r in ranked]
+    st.subheader("Candidate ranking")
+    st.dataframe(pd.DataFrame(summary_rows),use_container_width=True,hide_index=True,column_config={"compatibility":st.column_config.ProgressColumn("Compatibility",min_value=0,max_value=100,format="%.1f%%"),"evidence_coverage":st.column_config.ProgressColumn("Evidence coverage",min_value=0,max_value=100,format="%.1f%%")})
+    selected=st.selectbox("Detailed comparison",options=list(range(len(ranked))),format_func=lambda i:f"{ranked[i].candidate_name} — {ranked[i].status} ({ranked[i].compatibility_score:.1f}%)")
+    detail=pd.DataFrame(comparison_rows(ranked[selected]))
+    st.dataframe(detail,use_container_width=True,hide_index=True,column_config={"confidence":st.column_config.ProgressColumn("Confidence",min_value=0,max_value=1,format="%.0f%%")})
+    conflicts=detail[detail["status"].isin(["Conflict","Not Confirmed"])] if not detail.empty else detail
+    if not conflicts.empty:
+        st.subheader("Exceptions requiring attention")
+        st.dataframe(conflicts,use_container_width=True,hide_index=True)
+    filename,workbook=create_spec_comparison_workbook(original,ranked)
+    st.download_button("Download spec comparison workbook",workbook,file_name=filename,mime=EXCEL_MIME,type="primary",use_container_width=True)
+
+
+def _render_exact_image_match(config: AppConfig, serpapi_api_key: str, openai_api_key: str) -> None:
+    st.markdown("""<div class="hero"><h1>Exact Product From Image</h1><p>Upload clear photos of a product, label, model plate, or packaging. The app builds a visual fingerprint, searches exact identifiers, and visually verifies the strongest retailer candidates.</p></div>""", unsafe_allow_html=True)
+    photos=st.file_uploader("Upload one or more photos of the same product",type=["png","jpg","jpeg","webp"],accept_multiple_files=True,key="exact_photos")
+    hints=st.text_area("Optional hints",placeholder="Where it is used, approximate size, retailer, brand, or text that is hard to read")
+    location=st.text_input("Search location",value=config.default_location,key="exact_location")
+    run=st.button("Identify and find exact product",type="primary",use_container_width=True)
+    if not run: return
+    if not photos: st.error("Upload at least one product photo."); return
+    if not openai_api_key: st.error("OpenAI API key is required."); return
+    if not serpapi_api_key: st.error("SerpApi is required for live retailer results."); return
+    fingerprints=[]
+    with st.status("Reading labels and building a visual fingerprint...",expanded=True):
+        for photo in photos[:4]:
+            try: fingerprints.append(build_visual_fingerprint(image_bytes=photo.getvalue(),openai_api_key=openai_api_key,model=config.openai_model,hints=hints,max_upload_mb=config.max_upload_mb))
+            except Exception as exc: st.warning(f"Could not analyze {photo.name}: {exc}")
+    if not fingerprints: return
+    st.subheader("Identification evidence")
+    st.dataframe(pd.DataFrame(fingerprints),use_container_width=True,hide_index=True)
+    queries=[]
+    for f in fingerprints:
+        for q in f.get("search_queries",[]) or []:
+            if clean_text(q): queries.append(clean_text(q))
+        exact=" ".join(clean_text(f.get(k)) for k in ["brand","model_number","mpn","product_name","variant"] if clean_text(f.get(k)))
+        if exact: queries.insert(0,exact)
+    queries=unique_keep_order(queries,max_items=4)
+    results=[]
+    for q in queries:
+        try: results.extend(google_shopping_search(query=q,input_source="Exact image match",api_key=serpapi_api_key,location=location,country_code=config.country_code,language=config.language,max_results=10))
+        except Exception as exc: st.warning(f"Search failed for {q}: {exc}")
+    results=_dedupe_products(results)
+    rows=[r.to_row() for r in results]
+    verified=visually_verify_candidates(reference_bytes=photos[0].getvalue(),candidates=rows,openai_api_key=openai_api_key,model=config.openai_model,max_upload_mb=config.max_upload_mb) if rows else []
+    st.subheader("Visually verified candidates")
+    if verified:
+        df=pd.DataFrame(verified)
+        st.dataframe(df,use_container_width=True,hide_index=True,column_config={"thumbnail":st.column_config.ImageColumn("Image"),"product_link":st.column_config.LinkColumn("Retailer page",display_text="Open"),"visual_score":st.column_config.ProgressColumn("Visual match",min_value=0,max_value=100,format="%.0f%%")})
+        best=verified[0]
+        if best.get("visual_status")=="Exact" and best.get("visual_score",0)>=92:
+            st.success(f"Exact product candidate: {best.get('title')} — {best.get('visual_score'):.0f}% visual confidence")
+        else: st.warning("No candidate was confirmed as exact. Review the strongest matches or upload a clearer label/model-number photo.")
+    else:
+        st.info("No candidate images were available for visual verification.")
+
+
 def main() -> None:
     st.set_page_config(page_title="Product Hunter Pro", page_icon="🔎", layout="wide")
     st.markdown("""<style>
@@ -655,8 +771,16 @@ def main() -> None:
         return
 
     with st.sidebar:
-        app_mode = st.radio("Workspace", ["Product Search", "Project Intelligence", "Procurement Control Center", "Purchase Tracker"], horizontal=False)
+        app_mode = st.radio("Workspace", ["Product Search", "Exact Product From Image", "Spec Sheet Compare", "Project Intelligence", "Procurement Control Center", "Purchase Tracker"], horizontal=False)
 
+    if app_mode == "Spec Sheet Compare":
+        _, openai_api_key = _resolve_api_keys(config)
+        _render_spec_sheet_compare(config, openai_api_key)
+        return
+    if app_mode == "Exact Product From Image":
+        serpapi_api_key, openai_api_key = _resolve_api_keys(config)
+        _render_exact_image_match(config, serpapi_api_key, openai_api_key)
+        return
     if app_mode == "Purchase Tracker":
         _render_purchase_tracker()
         return

@@ -121,3 +121,6 @@ Live shelf inventory, authenticated distributor pricing, discontinued-status con
 ## Project Intelligence (v7)
 
 The third workspace adds schedule extraction, an editable equipment register, duplicate consolidation, project rules, quote review, JSON backup/restore, project Excel exports, and submittal ZIP creation.
+## v10: Spec Sheet Compare
+
+The Spec Sheet Compare workspace accepts one original required document and multiple candidate documents. It extracts structured technical attributes, normalizes equivalent terminology, detects hard conflicts, measures evidence coverage, ranks candidates, and exports an evidence-backed Excel comparison report.
