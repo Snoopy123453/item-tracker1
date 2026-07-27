@@ -92,3 +92,14 @@ Uploaded images and search requests are sent to configured external API provider
 - The Streamlit interface includes a polished branded header, improved cards, and clearer search controls.
 
 To update an existing Streamlit deployment, upload all files from this project over the matching files in the GitHub repository, commit the changes, and reboot the app. Existing Streamlit secrets remain in the hosting dashboard and should not be committed to GitHub.
+
+## Version 3 procurement report upgrades
+
+- Excel filenames are based on the recognized/searched product instead of the date.
+- Product images are embedded in the workbook when the source thumbnail is available.
+- Added a price-comparison worksheet and a procurement review checklist.
+- Technical-document search now also looks for warranty, parts diagrams, and CAD/BIM/Revit resources.
+- Added an optional UPC/barcode/manufacturer-part-number input.
+- Added lightweight recent-search history for the active browser session.
+
+Live shelf inventory, authenticated distributor pricing, discontinued-status confirmation, and approved-equivalent recommendations require retailer/manufacturer-specific APIs or accounts. The app labels nearby results and document matches as leads that must be verified before ordering.

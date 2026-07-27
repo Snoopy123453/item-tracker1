@@ -43,7 +43,7 @@ def test_workbook_is_valid_and_escapes_formula_text() -> None:
 
     assert filename.endswith(".xlsx")
     workbook = load_workbook(BytesIO(data), data_only=False)
-    assert workbook.sheetnames == ["Summary", "Inputs", "Product Results", "Nearby Stores", "Spec Documents"]
+    assert workbook.sheetnames == ["Summary", "Inputs", "Product Results", "Nearby Stores", "Spec Documents", "Price Comparison", "Review Notes"]
     assert workbook["Inputs"]["B2"].value.startswith("'")
     assert workbook["Product Results"]["N2"].hyperlink.target == "https://example.com/item"
     assert workbook["Nearby Stores"]["L2"].hyperlink.target == "https://maps.example.com/store"

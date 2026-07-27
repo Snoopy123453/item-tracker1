@@ -20,7 +20,7 @@ from product_finder.utils import clean_text, unique_keep_order
 from product_finder.vision import analyze_uploaded_image
 
 
-APP_TITLE = "Product Hunter"
+APP_TITLE = "Product Hunter Pro"
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -288,11 +288,12 @@ def _show_spec_documents(results: list[SpecDocument]) -> None:
     )
 
 def main() -> None:
-    st.set_page_config(page_title="Product Hunter", page_icon="🔎", layout="wide")
+    st.set_page_config(page_title="Product Hunter Pro", page_icon="🔎", layout="wide")
     st.markdown("""<style>
     .stApp {background: linear-gradient(180deg,#f4f8fc 0%,#ffffff 45%);}
     .block-container {max-width: 1380px; padding-top: 2rem;}
     h1,h2,h3 {color:#17324d;}
+    .section-card{background:white;border:1px solid #dbe7f2;border-radius:16px;padding:1rem 1.1rem;margin:.75rem 0;box-shadow:0 6px 18px rgba(23,50,77,.05)}
     [data-testid="stSidebar"] {background:#edf4fb; border-right:1px solid #d7e4f0;}
     .hero {padding:1.4rem 1.6rem;border-radius:18px;background:linear-gradient(120deg,#17324d,#2e75b6);color:white;margin-bottom:1.25rem;box-shadow:0 10px 28px rgba(23,50,77,.16)}
     .hero h1{color:white;margin:0;font-size:2.25rem}.hero p{margin:.5rem 0 0;color:#eaf3fb;font-size:1.05rem}
@@ -304,7 +305,7 @@ def main() -> None:
     if not _password_gate(config):
         return
 
-    st.markdown("""<div class="hero"><h1>Product Hunter</h1><p>Recognize products from images or text, compare retailers, find nearby suppliers and technical documents, then export a polished Excel workbook with product images.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><h1>Product Hunter Pro</h1><p>AI-assisted product recognition, retailer comparison, nearby supplier leads, technical documents, embedded images, and procurement-ready Excel reports.</p></div>""", unsafe_allow_html=True)
 
     serpapi_api_key, openai_api_key = _resolve_api_keys(config)
 
@@ -314,7 +315,7 @@ def main() -> None:
         location = st.text_input("City, state, or ZIP", value=config.default_location)
         include_online = st.checkbox("Online and shipping listings", value=True)
         include_nearby = st.checkbox("Nearby retailer leads", value=True)
-        include_specs = st.checkbox("Spec sheets and technical documents", value=True)
+        include_specs = st.checkbox("Spec sheets, manuals, warranty, parts, and CAD/BIM links", value=True)
         max_product_results = st.slider("Listings per search term", min_value=3, max_value=20, value=8)
         max_store_results = st.slider("Nearby stores per search term", min_value=1, max_value=10, value=4)
         max_spec_results = st.slider("Technical documents per search term", min_value=1, max_value=8, value=3)
@@ -323,6 +324,11 @@ def main() -> None:
             country_code = st.text_input("Country code", value=config.country_code).lower().strip() or "us"
             language = st.text_input("Language", value=config.language).lower().strip() or "en"
             openai_model = st.text_input("OpenAI vision model", value=config.openai_model).strip() or config.openai_model
+        history = st.session_state.get("search_history", [])
+        if history:
+            with st.expander("Recent searches"):
+                for item in history[:5]:
+                    st.caption(f"{item['file']} — {item['listings']} listings, {item['documents']} documents")
 
     with st.expander("Data handling and search limitations"):
         st.markdown(
@@ -335,8 +341,10 @@ def main() -> None:
         )
 
     with st.form("product_search_form"):
+        st.markdown("### Product inputs")
         left, right = st.columns(2)
         with left:
+            barcode_searches = st.text_input("Optional UPC / barcode / manufacturer part number", placeholder="012345678905 or JOSAM 30000-5A-Z")
             text_searches = st.text_area(
                 "Text searches, one per line",
                 placeholder="black Nike hoodie\nCrucial 2TB NVMe SSD",
@@ -372,6 +380,8 @@ def main() -> None:
         return
 
     text_queries = _split_lines(text_searches)
+    if barcode_searches.strip():
+        text_queries = unique_keep_order([barcode_searches.strip(), *text_queries])
     raw_image_urls = _split_lines(image_urls_text)
     invalid_urls = [url for url in raw_image_urls if not _valid_public_image_url(url)]
     image_urls = [url for url in raw_image_urls if _valid_public_image_url(url)]
@@ -551,7 +561,10 @@ def main() -> None:
         run_notes=" | ".join(unique_keep_order(run_notes)),
     )
 
-    st.success("Search complete. Review the results below and download the Excel workbook.")
+    st.success(f"Search complete. Your workbook will download as **{filename}**.")
+    history_item = {"file": filename, "inputs": len(input_records), "listings": len(product_results), "stores": len(store_results), "documents": len(spec_documents)}
+    st.session_state.setdefault("search_history", []).insert(0, history_item)
+    st.session_state["search_history"] = st.session_state["search_history"][:10]
     metric_one, metric_two, metric_three, metric_four = st.columns(4)
     metric_one.metric("Inputs", len(input_records))
     metric_two.metric("Product listings", len(product_results))
@@ -563,7 +576,7 @@ def main() -> None:
     _show_spec_documents(spec_documents)
 
     st.download_button(
-        "Download Excel spreadsheet",
+        f"Download {filename}",
         data=workbook_bytes,
         file_name=filename,
         mime=EXCEL_MIME,

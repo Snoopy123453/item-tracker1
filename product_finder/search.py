@@ -257,7 +257,7 @@ def google_spec_sheet_search(
 
     if max_results <= 0:
         return []
-    search_query = f'"{query}" (spec sheet OR submittal OR technical data OR installation manual) filetype:pdf'
+    search_query = f'"{query}" (spec sheet OR submittal OR technical data OR installation manual OR warranty OR parts diagram OR CAD OR BIM OR Revit)'
     data = _serpapi_get(
         {
             "engine": "google",
@@ -284,7 +284,14 @@ def google_spec_sheet_search(
         text = f"{title} {snippet} {link}".lower()
         token_hits = sum(1 for token in query_tokens if token in text)
         confidence = "Exact" if query_tokens and token_hits >= max(1, len(query_tokens) - 1) else "Likely" if token_hits else "Possible"
-        doc_type = "Installation manual" if "installation" in text or "manual" in text else "Submittal" if "submittal" in text else "Spec sheet"
+        doc_type = (
+            "Installation manual" if "installation" in text or "manual" in text
+            else "Warranty" if "warranty" in text
+            else "Parts diagram" if "parts" in text or "exploded" in text
+            else "CAD/BIM/Revit" if any(term in text for term in ("cad", "bim", "revit"))
+            else "Submittal" if "submittal" in text
+            else "Spec sheet"
+        )
         results.append(
             SpecDocument(
                 query=query,
