@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 from typing import Iterable
 from urllib.parse import urlparse
 
@@ -23,6 +24,12 @@ from product_finder.vision import analyze_uploaded_image
 from product_finder.project_intelligence import (
     consolidate_items, create_project_backup, create_project_workbook,
     create_submittal_zip, extract_schedule_items, load_project_backup,
+)
+from product_finder.procurement_controls import (
+    Requirement, append_audit, build_review_queue, classify_document,
+    compare_requirements, create_procurement_control_workbook, data_health_checks,
+    group_duplicate_offers, landed_cost, normalize_vendor, package_completeness,
+    vendor_score,
 )
 
 
@@ -519,6 +526,116 @@ def _render_project_intelligence(openai_api_key: str, model: str) -> None:
 
     st.session_state.project_v7=project
 
+
+def _render_procurement_control_center() -> None:
+    st.markdown("""<div class="hero"><h1>Procurement Control Center</h1><p>Define hard requirements, compare offers, calculate delivered cost, group duplicates, validate documentation, create PO drafts, and focus attention on unresolved risks.</p></div>""", unsafe_allow_html=True)
+    if "control_v8" not in st.session_state:
+        st.session_state.control_v8 = {"project_name":"", "products":[], "requirements":[], "documents":[], "audit":[], "receiving":[]}
+    data=st.session_state.control_v8
+    data["project_name"]=st.text_input("Project / report name", value=data.get("project_name", ""), placeholder="Hospital Plumbing Procurement")
+
+    tabs=st.tabs(["Products & costs","Requirements","Review dashboard","Documents","Vendors & receiving","Export"])
+    with tabs[0]:
+        st.markdown("### Import or enter product offers")
+        upload=st.file_uploader("Upload Product Hunter Excel/CSV or a vendor offer table", type=["xlsx","csv"], key="control_products")
+        if upload is not None and st.button("Import offer table", use_container_width=True):
+            try:
+                frame=pd.read_csv(upload) if upload.name.lower().endswith('.csv') else pd.read_excel(upload, sheet_name=None)
+                if isinstance(frame,dict):
+                    preferred=next((v for k,v in frame.items() if k in {"Product Results","Products","Purchase List","Equipment Register"}), next(iter(frame.values())))
+                    frame=preferred
+                data["products"]=frame.astype(object).where(pd.notna(frame),"").to_dict("records")
+                append_audit(data["audit"],"Imported offers",details=f"{len(data['products'])} rows from {upload.name}")
+                st.success(f"Imported {len(data['products'])} offer rows.")
+            except Exception as exc: st.error(f"Could not import: {exc}")
+        products=pd.DataFrame(data.get("products",[]))
+        base_cols=["title","manufacturer","model","seller","product_link","quantity","unit_price","shipping","tax_rate","discount","accessory_cost","match_score","exact_model_match","status","approved","lead_time_score","authorized_distributor","vendor_rating","notes"]
+        for c in base_cols:
+            if c not in products: products[c]=[] if products.empty else ""
+        edited=st.data_editor(products[base_cols],num_rows="dynamic",hide_index=True,use_container_width=True,
+            column_config={"product_link":st.column_config.LinkColumn("Product link"),"quantity":st.column_config.NumberColumn("Qty",min_value=0,step=1),"unit_price":st.column_config.NumberColumn("Unit price",format="$%.2f"),"shipping":st.column_config.NumberColumn("Shipping",format="$%.2f"),"tax_rate":st.column_config.NumberColumn("Tax rate",format="%.3f"),"discount":st.column_config.NumberColumn("Discount",format="$%.2f"),"accessory_cost":st.column_config.NumberColumn("Accessory cost",format="$%.2f"),"match_score":st.column_config.NumberColumn("Match %",min_value=0,max_value=100),"status":st.column_config.SelectboxColumn("Status",options=["Needs review","Approved","Rejected","Alternate","Selected","Ordered","Received","Installed"]),"approved":st.column_config.CheckboxColumn("Approved")},key="control_product_editor")
+        data["products"]=edited.fillna("").to_dict("records")
+        enriched=[]
+        for row in data["products"]:
+            calc=landed_cost(float(row.get("unit_price") or 0),float(row.get("quantity") or 1),float(row.get("shipping") or 0),float(row.get("tax_rate") or 0),float(row.get("discount") or 0),float(row.get("accessory_cost") or 0))
+            out=dict(row); out.update(calc); out["normalized_vendor"]=normalize_vendor(str(row.get("seller") or ""),str(row.get("product_link") or "")); out["vendor_score"]=vendor_score(out); enriched.append(out)
+        if enriched:
+            st.markdown("#### Delivered-cost comparison")
+            st.dataframe(pd.DataFrame(enriched)[[c for c in ["title","normalized_vendor","quantity","unit_price","shipping","tax","delivered_total","match_score","vendor_score","status"] if c in pd.DataFrame(enriched)]].sort_values(["delivered_total","match_score"],ascending=[True,False]),use_container_width=True,hide_index=True)
+            groups=group_duplicate_offers(enriched)
+            st.caption(f"Grouped into {len(groups)} unique product group(s) from {len(enriched)} offer(s).")
+
+    with tabs[1]:
+        st.markdown("### Hard requirements and preferences")
+        req_df=pd.DataFrame(data.get("requirements",[]))
+        for c in ["attribute","required_value","importance","weight"]:
+            if c not in req_df: req_df[c]=[] if req_df.empty else ""
+        req_edit=st.data_editor(req_df[["attribute","required_value","importance","weight"]],num_rows="dynamic",hide_index=True,use_container_width=True,
+            column_config={"importance":st.column_config.SelectboxColumn("Importance",options=["Required","Preferred","Optional","Ignore"]),"weight":st.column_config.NumberColumn("Weight",min_value=0.1,max_value=10.0,step=0.5)},key="requirements_editor")
+        data["requirements"]=req_edit.fillna("").to_dict("records")
+        components=st.text_area("Required package components, one per line",placeholder="sink\nfaucet\nbubbler\nangle stops\nstrainer\np-trap",key="package_components")
+        if data["products"] and data["requirements"]:
+            evaluated=[]
+            for row in data["products"]:
+                comps,reject,score=compare_requirements(data["requirements"],row)
+                package=package_completeness(_split_lines(components)," ".join(str(v) for v in row.values()))
+                evaluated.append({"title":row.get("title"),"seller":row.get("seller"),"requirements_score":score,"hard_reject":reject,"package_complete":package["percent"],"missing_components":"; ".join(package["missing"]),"comparison":" | ".join(f"{c.attribute}: {c.status}" for c in comps)})
+            st.markdown("#### Side-by-side compliance results")
+            st.dataframe(pd.DataFrame(evaluated).sort_values(["hard_reject","requirements_score"],ascending=[True,False]),use_container_width=True,hide_index=True)
+
+    with tabs[2]:
+        st.markdown("### Missing-information and risk queue")
+        minimum=st.slider("Minimum acceptable match score",0,100,85,key="control_minimum")
+        review=build_review_queue(data["products"],minimum)
+        health=data_health_checks(data["products"],data.get("documents",[]))
+        a,b,c=st.columns(3); a.metric("Offers",len(data["products"])); b.metric("Needs review",len(review)); c.metric("Data-health issues",len(health))
+        if review: st.dataframe(pd.DataFrame(review),use_container_width=True,hide_index=True)
+        else: st.success("No offers currently meet the review-queue rules.")
+        if health:
+            st.markdown("#### Data-health checks")
+            st.dataframe(pd.DataFrame(health),use_container_width=True,hide_index=True)
+
+    with tabs[3]:
+        st.markdown("### Document classification and validation register")
+        doc_df=pd.DataFrame(data.get("documents",[]))
+        for c in ["title","link","requested_model","document_type","opens","is_pdf","model_confirmed","notes"]:
+            if c not in doc_df: doc_df[c]=[] if doc_df.empty else ""
+        doc_edit=st.data_editor(doc_df,num_rows="dynamic",hide_index=True,use_container_width=True,column_config={"link":st.column_config.LinkColumn("Link")},key="document_editor")
+        data["documents"]=doc_edit.fillna("").to_dict("records")
+        if st.button("Classify documents",use_container_width=True):
+            for row in data["documents"]: row["document_type"]=classify_document(str(row.get("title") or ""),str(row.get("link") or ""))
+            append_audit(data["audit"],"Classified documents",details=f"{len(data['documents'])} documents")
+            st.rerun()
+        st.caption("Full online link validation can be slow and some manufacturer sites block automated checks. The export preserves links and review notes.")
+
+    with tabs[4]:
+        st.markdown("### Vendor scorecard")
+        if data["products"]:
+            vendor_rows=[]
+            for row in data["products"]:
+                vendor_rows.append({"vendor":normalize_vendor(str(row.get("seller") or ""),str(row.get("product_link") or "")),"offer":row.get("title"),"score":vendor_score(row),"match_score":row.get("match_score"),"authorized":row.get("authorized_distributor"),"vendor_rating":row.get("vendor_rating")})
+            st.dataframe(pd.DataFrame(vendor_rows).sort_values("score",ascending=False),use_container_width=True,hide_index=True)
+        st.markdown("### Receiving log")
+        rec=pd.DataFrame(data.get("receiving",[]))
+        for c in ["product","vendor","po_number","ordered_qty","received_qty","damaged_qty","backordered_qty","expected_date","received_date","tracking_number","packing_slip","status","notes"]:
+            if c not in rec: rec[c]=[] if rec.empty else ""
+        rec_edit=st.data_editor(rec,num_rows="dynamic",hide_index=True,use_container_width=True,key="receiving_editor")
+        data["receiving"]=rec_edit.fillna("").to_dict("records")
+
+    with tabs[5]:
+        st.markdown("### Export, audit, and templates")
+        user=st.text_input("Prepared by",key="control_user")
+        note=st.text_input("Audit note",placeholder="Approved vendor change after quote review",key="audit_note")
+        if st.button("Add audit entry",use_container_width=True):
+            append_audit(data["audit"],"Manual note",details=note,user=user); st.success("Audit entry added.")
+        if data["audit"]: st.dataframe(pd.DataFrame(data["audit"]),use_container_width=True,hide_index=True)
+        filename,content=create_procurement_control_workbook(data.get("project_name", ""),data["products"],data["requirements"],data["documents"],data["audit"])
+        st.download_button("Download procurement control workbook",content,file_name=filename,mime=EXCEL_MIME,type="primary",use_container_width=True)
+        backup=json.dumps(data,indent=2,default=str).encode("utf-8")
+        st.download_button("Download control-center backup",backup,file_name="procurement_control_backup.json",mime="application/json",use_container_width=True)
+        st.info("The workbook includes a dashboard, products, requirements, review queue, data-health findings, document register, audit log, and a draft PO sheet. Draft purchasing outputs still require human verification.")
+    st.session_state.control_v8=data
+
 def main() -> None:
     st.set_page_config(page_title="Product Hunter Pro", page_icon="🔎", layout="wide")
     st.markdown("""<style>
@@ -538,10 +655,13 @@ def main() -> None:
         return
 
     with st.sidebar:
-        app_mode = st.radio("Workspace", ["Product Search", "Project Intelligence", "Purchase Tracker"], horizontal=False)
+        app_mode = st.radio("Workspace", ["Product Search", "Project Intelligence", "Procurement Control Center", "Purchase Tracker"], horizontal=False)
 
     if app_mode == "Purchase Tracker":
         _render_purchase_tracker()
+        return
+    if app_mode == "Procurement Control Center":
+        _render_procurement_control_center()
         return
     if app_mode == "Project Intelligence":
         serpapi_api_key, openai_api_key = _resolve_api_keys(config)

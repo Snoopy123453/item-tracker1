@@ -1,4 +1,17 @@
-# Product Hunter Web App
+# Product Hunter Pro v8
+
+A browser-based product sourcing, project procurement, purchasing, and control application built with Streamlit.
+
+## Workspaces
+
+- Product Search
+- Project Intelligence
+- Procurement Control Center
+- Purchase Tracker
+
+## v8 highlights
+
+The Procurement Control Center adds hard requirement gates, specification comparisons, package completeness, duplicate grouping, delivered-cost calculations, review queues, data-health checks, document registers, vendor scorecards, receiving logs, audit history, and draft PO exports.
 
 Product Hunter turns typed descriptions, uploaded photos, and public image URLs into retailer searches. It shows online/shipping listings and nearby retailer leads, then creates a formatted Excel workbook for download.
 
