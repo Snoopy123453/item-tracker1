@@ -1,4 +1,4 @@
-# Product Hunter Pro v8
+# Product Hunter Pro v12 — OmniSearch Pro v8
 
 A browser-based product sourcing, project procurement, purchasing, and control application built with Streamlit.
 
@@ -124,3 +124,13 @@ The third workspace adds schedule extraction, an editable equipment register, du
 ## v10: Spec Sheet Compare
 
 The Spec Sheet Compare workspace accepts one original required document and multiple candidate documents. It extracts structured technical attributes, normalizes equivalent terminology, detects hard conflicts, measures evidence coverage, ranks candidates, and exports an evidence-backed Excel comparison report.
+
+
+## Official manufacturer search
+
+Product Hunter Pro v11 can search manufacturer product pages, catalogs, support pages, and technical documents separately from marketplace listings. Official domains and exact model-number evidence are highlighted and exported to the `Manufacturer Sources` worksheet.
+
+
+## OmniSearch
+
+Product Search searches manufacturers, catalogs, distributors, retailers, local suppliers, technical documents, and legacy/discontinued sources in one run, then merges and ranks the evidence in a unified table and Excel worksheet.

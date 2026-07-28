@@ -9,13 +9,17 @@ import pandas as pd
 import streamlit as st
 
 from product_finder.config import AppConfig, load_config
-from product_finder.models import InputRecord, ProductResult, SpecDocument, StoreResult
+from product_finder.models import InputRecord, ManufacturerResult, OmniSearchResult, ProductResult, SpecDocument, StoreResult
 from product_finder.matching import rank_product_matches
 from product_finder.search import (
     google_lens_queries_from_url,
     google_maps_nearby_stores,
+    google_manufacturer_search,
     google_shopping_search,
     google_spec_sheet_search,
+    google_everywhere_search,
+    omni_from_existing,
+    rank_omni_results,
 )
 from product_finder.spreadsheet import create_product_workbook_bytes
 from product_finder.purchase_tracker import extract_purchase_candidates, create_purchase_tracker_bytes
@@ -312,6 +316,55 @@ def _show_spec_documents(results: list[SpecDocument]) -> None:
             "pdf_link": st.column_config.CheckboxColumn("PDF"),
         },
     )
+
+
+
+def _show_manufacturer_results(results: list[ManufacturerResult]) -> None:
+    st.subheader("Official manufacturer sources")
+    if not results:
+        st.info("No likely manufacturer pages were returned, or manufacturer search was disabled.")
+        return
+    dataframe = _records_to_df(results)
+    columns = ["title", "manufacturer", "source_domain", "page_type", "official_source", "exact_model_mentioned", "source_confidence", "link", "query"]
+    st.dataframe(
+        dataframe[[column for column in columns if column in dataframe.columns]],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "link": st.column_config.LinkColumn("Manufacturer page", display_text="Open source"),
+            "official_source": st.column_config.CheckboxColumn("Likely official"),
+            "exact_model_mentioned": st.column_config.CheckboxColumn("Exact model found"),
+        },
+    )
+
+def _show_omni_results(results: list[OmniSearchResult]) -> None:
+    st.subheader("OmniSearch — all sources")
+    if not results:
+        st.info("No unified results were returned.")
+        return
+    df = _records_to_df(results)
+    source_options = sorted(x for x in df.get("source_type", pd.Series(dtype=str)).dropna().unique().tolist() if x)
+    c1, c2, c3 = st.columns([2, 1, 1])
+    selected = c1.multiselect("Filter source types", source_options, default=source_options, key="omni_source_filter")
+    exact_only = c2.checkbox("Exact model only", value=False, key="omni_exact_only")
+    official_only = c3.checkbox("Official only", value=False, key="omni_official_only")
+    view = df.copy()
+    if selected:
+        view = view[view["source_type"].isin(selected)]
+    if exact_only and "exact_model_mentioned" in view.columns:
+        view = view[view["exact_model_mentioned"] == True]  # noqa: E712
+    if official_only and "official_source" in view.columns:
+        view = view[view["official_source"] == True]  # noqa: E712
+    cols = ["rank", "overall_score", "verification_status", "title", "source_name", "source_type", "result_kind", "price", "delivery", "official_source", "authorized_distributor", "exact_model_mentioned", "legacy_or_discontinued", "source_reliability", "evidence", "link", "query"]
+    st.dataframe(view[[c for c in cols if c in view.columns]], use_container_width=True, hide_index=True, column_config={
+        "overall_score": st.column_config.ProgressColumn("Overall", min_value=0, max_value=100, format="%.1f%%"),
+        "source_reliability": st.column_config.ProgressColumn("Source trust", min_value=0, max_value=100, format="%.0f%%"),
+        "official_source": st.column_config.CheckboxColumn("Official"),
+        "authorized_distributor": st.column_config.CheckboxColumn("Distributor"),
+        "exact_model_mentioned": st.column_config.CheckboxColumn("Exact model"),
+        "legacy_or_discontinued": st.column_config.CheckboxColumn("Legacy"),
+        "link": st.column_config.LinkColumn("Open source", display_text="Open"),
+    })
 
 
 def _render_purchase_tracker() -> None:
@@ -792,7 +845,7 @@ def main() -> None:
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
-    st.markdown("""<div class="hero"><h1>Product Hunter Pro</h1><p>AI-assisted product recognition, retailer comparison, nearby supplier leads, technical documents, embedded images, and procurement-ready Excel reports.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><h1>Product Hunter Pro</h1><p>One search across manufacturers, catalogs, distributors, retailers, technical documents, local suppliers, and legacy sources—merged into one evidence-ranked procurement report.</p></div>""", unsafe_allow_html=True)
 
     serpapi_api_key, openai_api_key = _resolve_api_keys(config)
 
@@ -800,12 +853,18 @@ def main() -> None:
         st.divider()
         st.header("Search settings")
         location = st.text_input("City, state, or ZIP", value=config.default_location)
-        include_online = st.checkbox("Online and shipping listings", value=True)
-        include_nearby = st.checkbox("Nearby retailer leads", value=True)
-        include_specs = st.checkbox("Spec sheets, manuals, warranty, parts, and CAD/BIM links", value=True)
+        search_everywhere = st.checkbox("Search Everywhere (OmniSearch)", value=True, help="Searches manufacturers, catalogs, distributors, retailers, technical documents, local suppliers, and legacy/discontinued pages in one run.")
+        with st.expander("Source controls"):
+            include_online = st.checkbox("Shopping and shipping listings", value=True)
+            include_nearby = st.checkbox("Nearby supplier leads", value=True)
+            include_specs = st.checkbox("Technical documents", value=True)
+            include_manufacturer = st.checkbox("Official manufacturer sources", value=True)
+            include_broad_web = st.checkbox("Broad web, distributors, and legacy pages", value=True)
         max_product_results = st.slider("Listings per search term", min_value=3, max_value=20, value=8)
         max_store_results = st.slider("Nearby stores per search term", min_value=1, max_value=10, value=4)
         max_spec_results = st.slider("Technical documents per search term", min_value=1, max_value=8, value=3)
+        max_manufacturer_results = st.slider("Manufacturer sources per search term", min_value=1, max_value=8, value=4)
+        max_omni_results = st.slider("Broad web results per search term", min_value=5, max_value=50, value=20)
         max_queries_per_input = st.slider("Search terms per image/input", min_value=1, max_value=4, value=2)
         with st.expander("Advanced"):
             country_code = st.text_input("Country code", value=config.country_code).lower().strip() or "us"
@@ -863,7 +922,7 @@ def main() -> None:
         st.info("Add a text search, image upload, or public image URL, then start the search.")
         return
 
-    if not include_online and not include_nearby and not include_specs:
+    if not search_everywhere and not include_online and not include_nearby and not include_specs and not include_manufacturer and not include_broad_web:
         st.error("Enable online listings, nearby retailer leads, technical documents, or a combination.")
         return
 
@@ -890,6 +949,8 @@ def main() -> None:
     product_results: list[ProductResult] = []
     store_results: list[StoreResult] = []
     spec_documents: list[SpecDocument] = []
+    manufacturer_results: list[ManufacturerResult] = []
+    omni_results: list[OmniSearchResult] = []
     run_notes: list[str] = []
 
     with st.status("Recognizing products and building search terms...", expanded=True) as status:
@@ -973,7 +1034,9 @@ def main() -> None:
         st.warning("No usable search terms were generated. Add clearer text or more specific image hints.")
         return
 
-    steps_per_job = int(include_online) + int(include_nearby) + int(include_specs)
+    if search_everywhere:
+        include_online = include_nearby = include_specs = include_manufacturer = include_broad_web = True
+    steps_per_job = int(include_online) + int(include_nearby) + int(include_specs) + int(include_manufacturer) + int(include_broad_web)
     total_steps = len(search_jobs) * steps_per_job
     completed = 0
     progress = st.progress(0, text="Searching retailers...")
@@ -1036,8 +1099,37 @@ def main() -> None:
             completed += 1
             progress.progress(completed / total_steps, text=f"Searched technical documents for: {query}")
 
+        if include_manufacturer:
+            try:
+                manufacturer_results.extend(
+                    google_manufacturer_search(
+                        query=query,
+                        api_key=serpapi_api_key,
+                        country_code=country_code,
+                        language=language,
+                        max_results=max_manufacturer_results,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                message = f"Manufacturer-site search failed for '{query}': {exc}"
+                st.warning(message)
+                run_notes.append(message)
+            completed += 1
+            progress.progress(completed / total_steps, text=f"Searched manufacturer sources for: {query}")
+
+        if include_broad_web:
+            try:
+                omni_results.extend(google_everywhere_search(query=query, api_key=serpapi_api_key, country_code=country_code, language=language, max_results=max_omni_results))
+            except Exception as exc:  # noqa: BLE001
+                message = f"Broad OmniSearch failed for '{query}': {exc}"
+                st.warning(message)
+                run_notes.append(message)
+            completed += 1
+            progress.progress(completed / total_steps, text=f"Searched distributors, web, and legacy sources for: {query}")
+
     product_results = rank_product_matches(_dedupe_products(product_results))
     store_results = _dedupe_stores(store_results)
+    omni_results = rank_omni_results(omni_results + omni_from_existing(products=product_results, specs=spec_documents, manufacturers=manufacturer_results, stores=store_results))
     progress.progress(1.0, text="Search complete.")
 
     filename, workbook_bytes = create_product_workbook_bytes(
@@ -1045,6 +1137,8 @@ def main() -> None:
         product_results=product_results,
         store_results=store_results,
         spec_documents=spec_documents,
+        manufacturer_results=manufacturer_results,
+        omni_results=omni_results,
         location=location,
         run_notes=" | ".join(unique_keep_order(run_notes)),
     )
@@ -1056,18 +1150,22 @@ def main() -> None:
             f"Best Match ranked {best_count} search group(s). Scores compare the requested model, manufacturer, "
             "dimensions, materials, connections, finish, and accessories against each listing. Always verify the official spec sheet before ordering."
         )
-    history_item = {"file": filename, "inputs": len(input_records), "listings": len(product_results), "stores": len(store_results), "documents": len(spec_documents)}
+    history_item = {"file": filename, "inputs": len(input_records), "listings": len(product_results), "stores": len(store_results), "documents": len(spec_documents), "manufacturer_sources": len(manufacturer_results), "omni_results": len(omni_results)}
     st.session_state.setdefault("search_history", []).insert(0, history_item)
     st.session_state["search_history"] = st.session_state["search_history"][:10]
-    metric_one, metric_two, metric_three, metric_four = st.columns(4)
+    metric_one, metric_two, metric_three, metric_four, metric_five, metric_six = st.columns(6)
     metric_one.metric("Inputs", len(input_records))
     metric_two.metric("Product listings", len(product_results))
     metric_three.metric("Nearby retailers", len(store_results))
     metric_four.metric("Technical documents", len(spec_documents))
+    metric_five.metric("Manufacturer sources", len(manufacturer_results))
+    metric_six.metric("All sources", len(omni_results))
 
+    _show_omni_results(omni_results)
     _show_product_results(product_results)
     _show_store_results(store_results)
     _show_spec_documents(spec_documents)
+    _show_manufacturer_results(manufacturer_results)
 
     st.download_button(
         f"Download {filename}",

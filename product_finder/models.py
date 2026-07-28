@@ -104,3 +104,55 @@ class SpecDocument:
 
     def to_row(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class ManufacturerResult:
+    query: str
+    rank: int
+    title: str
+    manufacturer: str = ""
+    source_domain: str = ""
+    page_type: str = "Product page"
+    link: str = ""
+    snippet: str = ""
+    official_source: bool = False
+    exact_model_mentioned: bool = False
+    source_confidence: str = "Possible"
+    retrieved_at: str = field(default_factory=now_iso)
+    raw_source: str = "Google Search / SerpApi"
+
+    def to_row(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class OmniSearchResult:
+    query: str
+    rank: int
+    title: str
+    source_name: str = ""
+    source_domain: str = ""
+    source_type: str = "General web"
+    result_kind: str = "Product page"
+    link: str = ""
+    snippet: str = ""
+    price: str = ""
+    extracted_price: float | None = None
+    delivery: str = ""
+    location: str = ""
+    official_source: bool = False
+    authorized_distributor: bool = False
+    exact_model_mentioned: bool = False
+    document_pdf: bool = False
+    legacy_or_discontinued: bool = False
+    source_reliability: float = 0.0
+    match_score: float = 0.0
+    overall_score: float = 0.0
+    verification_status: str = "Needs review"
+    evidence: str = ""
+    raw_source: str = "OmniSearch"
+    retrieved_at: str = field(default_factory=now_iso)
+
+    def to_row(self) -> dict[str, Any]:
+        return asdict(self)

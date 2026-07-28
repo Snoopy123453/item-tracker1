@@ -14,7 +14,7 @@ from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from openpyxl.utils import get_column_letter, quote_sheetname
 from openpyxl.worksheet.worksheet import Worksheet
 
-from .models import InputRecord, ProductResult, SpecDocument, StoreResult
+from .models import InputRecord, ManufacturerResult, OmniSearchResult, ProductResult, SpecDocument, StoreResult
 from .utils import ensure_directory, safe_filename
 
 NAVY = "17324D"
@@ -306,12 +306,12 @@ def _add_summary_sheet(wb: Workbook, *, product_count: int, store_count: int, sp
     return ws
 
 
-def _build_workbook(*, input_records: list[InputRecord], product_results: list[ProductResult], store_results: list[StoreResult], spec_documents: list[SpecDocument], location: str, run_notes: str = "") -> Workbook:
+def _build_workbook(*, input_records: list[InputRecord], product_results: list[ProductResult], store_results: list[StoreResult], spec_documents: list[SpecDocument], manufacturer_results: list[ManufacturerResult] | None = None, omni_results: list[OmniSearchResult] | None = None, location: str, run_notes: str = "") -> Workbook:
     wb = Workbook()
     subjects = _report_subjects(input_records)
     report_title = subjects[0] if len(subjects) == 1 else ("Product Procurement Report" if not subjects else f"Product Procurement Report — {len(subjects)} Items")
     wb.properties.title = report_title
-    wb.properties.subject = "Retail products, nearby stores, product images, price comparisons, and technical documents"
+    wb.properties.subject = "Retail products, official manufacturer sources, nearby stores, product images, price comparisons, and technical documents"
     wb.properties.creator = "Product Hunter Web App"
 
     input_headers = ["input_type", "label", "extracted_product_name", "brand", "category", "confidence", "generated_queries", "notes", "source_url", "retrieved_at"]
@@ -352,6 +352,26 @@ def _build_workbook(*, input_records: list[InputRecord], product_results: list[P
     _write_rows(ws_specs, spec_headers, [result.to_row() for result in spec_documents])
     _format_table(ws_specs)
 
+    manufacturer_results = manufacturer_results or []
+    manufacturer_headers = ["query", "rank", "title", "manufacturer", "source_domain", "page_type", "link", "snippet", "official_source", "exact_model_mentioned", "source_confidence", "retrieved_at", "raw_source"]
+    ws_manufacturer = wb.create_sheet("Manufacturer Sources")
+    _write_rows(ws_manufacturer, manufacturer_headers, [result.to_row() for result in manufacturer_results])
+    _format_table(ws_manufacturer)
+
+    omni_results = omni_results or []
+    omni_headers = ["query", "rank", "title", "source_name", "source_domain", "source_type", "result_kind", "link", "snippet", "price", "extracted_price", "delivery", "location", "official_source", "authorized_distributor", "exact_model_mentioned", "document_pdf", "legacy_or_discontinued", "source_reliability", "match_score", "overall_score", "verification_status", "evidence", "raw_source", "retrieved_at"]
+    ws_omni = wb.create_sheet("OmniSearch Results")
+    _write_rows(ws_omni, omni_headers, [result.to_row() for result in omni_results])
+    _format_table(ws_omni)
+    _format_number_columns(ws_omni, {"extracted_price"}, {"source_reliability", "match_score", "overall_score"})
+    omni_map = {cell.value: cell.column for cell in ws_omni[1] if cell.value}
+    overall_col = omni_map.get("overall_score")
+    if overall_col and ws_omni.max_row >= 2:
+        letter = get_column_letter(overall_col)
+        ws_omni.conditional_formatting.add(f"{letter}2:{letter}{ws_omni.max_row}", CellIsRule(operator="greaterThanOrEqual", formula=["90"], fill=PatternFill("solid", fgColor="C6EFCE")))
+        ws_omni.conditional_formatting.add(f"{letter}2:{letter}{ws_omni.max_row}", CellIsRule(operator="between", formula=["70", "89.999"], fill=PatternFill("solid", fgColor="FFEB9C")))
+        ws_omni.conditional_formatting.add(f"{letter}2:{letter}{ws_omni.max_row}", CellIsRule(operator="lessThan", formula=["70"], fill=PatternFill("solid", fgColor="FFC7CE")))
+
     _add_best_matches_sheet(wb, product_results)
     _add_comparison_sheet(wb, product_results)
     _add_notes_sheet(wb)
@@ -360,15 +380,15 @@ def _build_workbook(*, input_records: list[InputRecord], product_results: list[P
     return wb
 
 
-def create_product_workbook_bytes(*, input_records: list[InputRecord], product_results: list[ProductResult], store_results: list[StoreResult], spec_documents: list[SpecDocument] | None = None, location: str, run_notes: str = "") -> tuple[str, bytes]:
+def create_product_workbook_bytes(*, input_records: list[InputRecord], product_results: list[ProductResult], store_results: list[StoreResult], spec_documents: list[SpecDocument] | None = None, manufacturer_results: list[ManufacturerResult] | None = None, omni_results: list[OmniSearchResult] | None = None, location: str, run_notes: str = "") -> tuple[str, bytes]:
     filename = suggest_workbook_filename(input_records)
-    wb = _build_workbook(input_records=input_records, product_results=product_results, store_results=store_results, spec_documents=spec_documents or [], location=location, run_notes=run_notes)
+    wb = _build_workbook(input_records=input_records, product_results=product_results, store_results=store_results, spec_documents=spec_documents or [], manufacturer_results=manufacturer_results or [], omni_results=omni_results or [], location=location, run_notes=run_notes)
     buffer = BytesIO(); wb.save(buffer); buffer.seek(0)
     return filename, buffer.getvalue()
 
 
-def create_product_workbook(*, input_records: list[InputRecord], product_results: list[ProductResult], store_results: list[StoreResult], spec_documents: list[SpecDocument] | None = None, location: str, output_dir: str | Path = "exports", run_notes: str = "") -> Path:
+def create_product_workbook(*, input_records: list[InputRecord], product_results: list[ProductResult], store_results: list[StoreResult], spec_documents: list[SpecDocument] | None = None, manufacturer_results: list[ManufacturerResult] | None = None, omni_results: list[OmniSearchResult] | None = None, location: str, output_dir: str | Path = "exports", run_notes: str = "") -> Path:
     output_path = ensure_directory(output_dir)
-    filename, workbook_bytes = create_product_workbook_bytes(input_records=input_records, product_results=product_results, store_results=store_results, spec_documents=spec_documents or [], location=location, run_notes=run_notes)
+    filename, workbook_bytes = create_product_workbook_bytes(input_records=input_records, product_results=product_results, store_results=store_results, spec_documents=spec_documents or [], manufacturer_results=manufacturer_results or [], omni_results=omni_results or [], location=location, run_notes=run_notes)
     workbook_path = output_path / filename; workbook_path.write_bytes(workbook_bytes)
     return workbook_path

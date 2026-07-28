@@ -310,3 +310,270 @@ def google_spec_sheet_search(
         if len(results) >= max_results:
             break
     return results
+
+
+def google_manufacturer_search(
+    *,
+    query: str,
+    api_key: str,
+    country_code: str = "us",
+    language: str = "en",
+    max_results: int = 5,
+) -> list["ManufacturerResult"]:
+    """Search official manufacturer websites and rank product/catalog pages above marketplaces."""
+    from urllib.parse import urlparse
+    from .models import ManufacturerResult
+
+    if max_results <= 0:
+        return []
+
+    cleaned_query = clean_text(query)
+    tokens = [t for t in cleaned_query.replace("/", " ").replace("-", " ").split() if t]
+    manufacturer = " ".join(tokens[:2]) if len(tokens) > 1 else (tokens[0] if tokens else "")
+    model_tokens = [t for t in tokens if any(ch.isdigit() for ch in t)]
+    search_query = f'"{cleaned_query}" (official OR manufacturer OR product OR catalog OR specification) -amazon -ebay -walmart'
+    data = _serpapi_get({
+        "engine": "google",
+        "q": search_query,
+        "gl": country_code,
+        "hl": language,
+        "num": min(max_results * 3, 20),
+        "api_key": api_key,
+    })
+    items = data.get("organic_results") or []
+    marketplace_domains = {
+        "amazon.com", "ebay.com", "walmart.com", "homedepot.com", "lowes.com",
+        "zoro.com", "grainger.com", "build.com", "supplyhouse.com", "ferguson.com",
+    }
+    manufacturer_terms = [t.lower() for t in tokens[:2] if len(t) > 2]
+    results: list[ManufacturerResult] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        link = clean_text(item.get("link"))
+        if not link:
+            continue
+        domain = urlparse(link).netloc.lower().removeprefix("www.")
+        if domain in seen:
+            continue
+        title = clean_text(item.get("title"))
+        snippet = clean_text(item.get("snippet"))
+        haystack = f"{title} {snippet} {link}".lower()
+        exact_model = bool(model_tokens and all(token.lower() in haystack for token in model_tokens))
+        domain_tokens = domain.replace("-", " ").replace(".", " ").split()
+        official = domain not in marketplace_domains and any(term in domain_tokens or term in domain for term in manufacturer_terms)
+        if not official and domain in marketplace_domains:
+            continue
+        page_type = (
+            "PDF / technical document" if link.lower().split("?")[0].endswith(".pdf")
+            else "Catalog page" if "catalog" in haystack
+            else "Support / documentation" if any(x in haystack for x in ("manual", "spec", "submittal", "support", "download"))
+            else "Product page"
+        )
+        confidence = "Official exact model" if official and exact_model else "Likely official" if official else "Possible manufacturer source"
+        results.append(ManufacturerResult(
+            query=cleaned_query,
+            rank=0,
+            title=title,
+            manufacturer=manufacturer,
+            source_domain=domain,
+            page_type=page_type,
+            link=link,
+            snippet=snippet,
+            official_source=official,
+            exact_model_mentioned=exact_model,
+            source_confidence=confidence,
+        ))
+        seen.add(domain)
+
+    results.sort(key=lambda r: (not r.official_source, not r.exact_model_mentioned, r.source_domain))
+    for idx, result in enumerate(results[:max_results], start=1):
+        result.rank = idx
+    return results[:max_results]
+
+# --- OmniSearch v12 ---------------------------------------------------------
+from urllib.parse import urlparse, urlunparse
+from .models import OmniSearchResult
+
+_MARKETPLACE_DOMAINS = {
+    "amazon.com", "ebay.com", "walmart.com", "homedepot.com", "lowes.com",
+    "bestbuy.com", "target.com", "etsy.com", "aliexpress.com",
+}
+_DISTRIBUTOR_DOMAINS = {
+    "ferguson.com", "grainger.com", "supplyhouse.com", "zoro.com", "build.com",
+    "hdsupplysolutions.com", "fastenal.com", "mcmaster.com", "winsupplyinc.com",
+    "globalindustrial.com", "uline.com", "hajoca.com", "firstsupply.com",
+}
+_DOC_TERMS = ("spec", "submittal", "manual", "installation", "warranty", "parts", "cad", "bim", "revit", "datasheet", "technical")
+_LEGACY_TERMS = ("discontinued", "obsolete", "legacy", "superseded", "replacement", "archived", "archive")
+
+
+def _canonical_url(url: str) -> str:
+    try:
+        parsed = urlparse(url.strip())
+        return urlunparse((parsed.scheme.lower(), parsed.netloc.lower().removeprefix("www."), parsed.path.rstrip("/"), "", "", ""))
+    except Exception:
+        return url.strip().lower()
+
+
+def _query_model_tokens(query: str) -> list[str]:
+    return [t.lower() for t in clean_text(query).replace("/", " ").split() if any(ch.isdigit() for ch in t) and len(t) >= 3]
+
+
+def _classify_web_result(*, query: str, title: str, snippet: str, link: str) -> tuple[str, str, bool, bool, bool, bool, float, str]:
+    domain = urlparse(link).netloc.lower().removeprefix("www.")
+    text = f"{title} {snippet} {link}".lower()
+    model_tokens = _query_model_tokens(query)
+    exact_model = bool(model_tokens and all(token in text for token in model_tokens))
+    is_pdf = link.lower().split("?")[0].endswith(".pdf")
+    legacy = any(term in text for term in _LEGACY_TERMS)
+    document = is_pdf or any(term in text for term in _DOC_TERMS)
+    marketplace = domain in _MARKETPLACE_DOMAINS or any(domain.endswith("." + d) for d in _MARKETPLACE_DOMAINS)
+    distributor = domain in _DISTRIBUTOR_DOMAINS or any(domain.endswith("." + d) for d in _DISTRIBUTOR_DOMAINS)
+
+    query_words = [w.lower() for w in clean_text(query).replace("-", " ").split() if len(w) > 2 and not any(ch.isdigit() for ch in w)]
+    likely_brand = query_words[0] if query_words else ""
+    official = bool(likely_brand and likely_brand in domain.replace("-", "")) and not marketplace and not distributor
+
+    if legacy:
+        source_type = "Legacy / discontinued"
+    elif official and document:
+        source_type = "Official manufacturer document"
+    elif official:
+        source_type = "Official manufacturer"
+    elif distributor:
+        source_type = "Distributor"
+    elif marketplace:
+        source_type = "Retailer / marketplace"
+    elif document:
+        source_type = "Technical document"
+    else:
+        source_type = "General web"
+
+    if document:
+        result_kind = "PDF / technical document" if is_pdf else "Documentation page"
+    elif "product" in text or exact_model:
+        result_kind = "Product page"
+    elif legacy:
+        result_kind = "Archive / lifecycle page"
+    else:
+        result_kind = "Web result"
+
+    reliability = 95.0 if official and exact_model else 90.0 if official else 85.0 if distributor and exact_model else 78.0 if distributor else 68.0 if document else 58.0 if marketplace else 45.0
+    evidence_parts = []
+    if exact_model: evidence_parts.append("Exact model text found")
+    if official: evidence_parts.append("Likely official manufacturer domain")
+    if distributor: evidence_parts.append("Known distributor domain")
+    if is_pdf: evidence_parts.append("Direct PDF")
+    if legacy: evidence_parts.append("Lifecycle/legacy terms found")
+    return source_type, result_kind, official, distributor, exact_model, legacy, reliability, "; ".join(evidence_parts)
+
+
+def google_everywhere_search(
+    *, query: str, api_key: str, country_code: str = "us", language: str = "en", max_results: int = 20,
+) -> list[OmniSearchResult]:
+    """Broad organic search covering manufacturers, distributors, documents, retailers, and legacy pages."""
+    if max_results <= 0:
+        return []
+    q = clean_text(query)
+    broad_query = (
+        f'"{q}" (product OR manufacturer OR distributor OR supplier OR price OR buy OR '
+        '"spec sheet" OR submittal OR manual OR warranty OR CAD OR BIM OR Revit OR '
+        'discontinued OR obsolete OR superseded OR replacement)'
+    )
+    data = _serpapi_get({
+        "engine": "google", "q": broad_query, "gl": country_code, "hl": language,
+        "num": min(max_results, 100), "api_key": api_key,
+    })
+    items = data.get("organic_results") or []
+    results: list[OmniSearchResult] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        link = clean_text(item.get("link"))
+        if not link:
+            continue
+        title = clean_text(item.get("title"))
+        snippet = clean_text(item.get("snippet"))
+        domain = urlparse(link).netloc.lower().removeprefix("www.")
+        source_type, kind, official, distributor, exact_model, legacy, reliability, evidence = _classify_web_result(
+            query=q, title=title, snippet=snippet, link=link
+        )
+        match = 100.0 if exact_model else 72.0 if all(tok in f"{title} {snippet}".lower() for tok in q.lower().split()[:2]) else 55.0
+        overall = round(match * 0.62 + reliability * 0.38, 1)
+        status = "Verified exact source" if exact_model and official else "Exact model found" if exact_model else "Likely relevant" if overall >= 65 else "Needs review"
+        results.append(OmniSearchResult(
+            query=q, rank=0, title=title, source_name=domain, source_domain=domain,
+            source_type=source_type, result_kind=kind, link=link, snippet=snippet,
+            official_source=official, authorized_distributor=distributor,
+            exact_model_mentioned=exact_model, document_pdf=link.lower().split("?")[0].endswith(".pdf"),
+            legacy_or_discontinued=legacy, source_reliability=reliability,
+            match_score=match, overall_score=overall, verification_status=status,
+            evidence=evidence, raw_source="Google organic / SerpApi",
+        ))
+    return rank_omni_results(results)
+
+
+def omni_from_existing(
+    *, products: list[ProductResult], specs: list["SpecDocument"], manufacturers: list["ManufacturerResult"], stores: list[StoreResult],
+) -> list[OmniSearchResult]:
+    """Convert existing specialized search results into the unified OmniSearch schema."""
+    out: list[OmniSearchResult] = []
+    for p in products:
+        domain = urlparse(p.product_link or p.seller_link).netloc.lower().removeprefix("www.")
+        distributor = domain in _DISTRIBUTOR_DOMAINS
+        reliability = 78.0 if distributor else 58.0
+        score = float(p.match_score or 0.0)
+        out.append(OmniSearchResult(query=p.query, rank=0, title=p.title, source_name=p.seller, source_domain=domain,
+            source_type="Distributor" if distributor else "Retailer / marketplace", result_kind="Shopping listing",
+            link=p.product_link or p.seller_link, snippet=p.snippet, price=p.price, extracted_price=p.extracted_price,
+            delivery=p.delivery, authorized_distributor=distributor, exact_model_mentioned=bool(p.exact_model_match),
+            source_reliability=reliability, match_score=score, overall_score=round(score*0.72+reliability*0.28,1),
+            verification_status="Exact model found" if p.exact_model_match else "Needs review", evidence=p.score_breakdown,
+            raw_source=p.raw_source))
+    for d in specs:
+        reliability = 92.0 if d.official_source else 70.0
+        match = 98.0 if d.match_confidence == "Exact" else 82.0 if d.match_confidence == "Likely" else 62.0
+        out.append(OmniSearchResult(query=d.query, rank=0, title=d.title, source_name=d.source_domain, source_domain=d.source_domain,
+            source_type="Official manufacturer document" if d.official_source else "Technical document", result_kind=d.document_type,
+            link=d.link, snippet=d.snippet, official_source=d.official_source, exact_model_mentioned=d.match_confidence=="Exact",
+            document_pdf=d.pdf_link, source_reliability=reliability, match_score=match,
+            overall_score=round(match*0.6+reliability*0.4,1), verification_status="Document evidence" if d.match_confidence != "Possible" else "Needs review",
+            evidence=f"Document confidence: {d.match_confidence}", raw_source=d.raw_source))
+    for m in manufacturers:
+        reliability = 98.0 if m.official_source else 62.0
+        match = 100.0 if m.exact_model_mentioned else 75.0
+        out.append(OmniSearchResult(query=m.query, rank=0, title=m.title, source_name=m.manufacturer or m.source_domain,
+            source_domain=m.source_domain, source_type="Official manufacturer" if m.official_source else "General web",
+            result_kind=m.page_type, link=m.link, snippet=m.snippet, official_source=m.official_source,
+            exact_model_mentioned=m.exact_model_mentioned, document_pdf=m.page_type.startswith("PDF"),
+            source_reliability=reliability, match_score=match, overall_score=round(match*0.6+reliability*0.4,1),
+            verification_status="Verified exact source" if m.official_source and m.exact_model_mentioned else m.source_confidence,
+            evidence=m.source_confidence, raw_source=m.raw_source))
+    for s in stores:
+        out.append(OmniSearchResult(query=s.query, rank=0, title=s.title, source_name=s.title,
+            source_domain=urlparse(s.website).netloc.lower().removeprefix("www."), source_type="Local supplier",
+            result_kind="Nearby store", link=s.website or s.maps_link, snippet=f"{s.address}; {s.phone}; {s.hours}",
+            location=s.address, source_reliability=55.0, match_score=45.0, overall_score=49.0,
+            verification_status="Local lead — inventory unconfirmed", evidence="Google Maps business result", raw_source=s.raw_source))
+    return out
+
+
+def rank_omni_results(results: list[OmniSearchResult]) -> list[OmniSearchResult]:
+    seen: dict[str, OmniSearchResult] = {}
+    for item in results:
+        key = _canonical_url(item.link) or f"{item.query.lower()}|{item.title.lower()}|{item.source_domain}"
+        prior = seen.get(key)
+        if prior is None or item.overall_score > prior.overall_score:
+            seen[key] = item
+    ranked = list(seen.values())
+    ranked.sort(key=lambda r: (
+        r.query.lower(), -float(r.overall_score), not r.official_source, not r.exact_model_mentioned,
+        r.source_type, r.title.lower()
+    ))
+    counters: dict[str, int] = {}
+    for item in ranked:
+        counters[item.query] = counters.get(item.query, 0) + 1
+        item.rank = counters[item.query]
+    return ranked
