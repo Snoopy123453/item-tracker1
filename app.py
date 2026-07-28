@@ -23,6 +23,7 @@ from product_finder.search import (
 )
 from product_finder.spreadsheet import create_product_workbook_bytes
 from product_finder.purchase_tracker import extract_purchase_candidates, create_purchase_tracker_bytes
+from product_finder.rfq_builder import extract_rfq_items, build_rfq_email, create_rfq_workbook
 from product_finder.utils import clean_text, unique_keep_order
 from product_finder.vision import analyze_uploaded_image
 from product_finder.exact_image_match import build_visual_fingerprint, visually_verify_candidates
@@ -805,6 +806,62 @@ def _render_exact_image_match(config: AppConfig, serpapi_api_key: str, openai_ap
         st.info("No candidate images were available for visual verification.")
 
 
+
+def _render_request_quotes() -> None:
+    st.markdown("""<div class="hero"><h1>Request Quotes</h1><p>Import a Product Hunter workbook, select the exact products, and generate an email-ready RFQ plus a vendor quote workbook with lead-time and delivery fields.</p></div>""", unsafe_allow_html=True)
+    uploaded = st.file_uploader("Upload a Product Hunter or project Excel workbook", type=["xlsx"], key="rfq_upload")
+    items = []
+    if uploaded:
+        try:
+            items = extract_rfq_items(uploaded.getvalue())
+            st.success(f"Found {len(items)} unique product(s).")
+        except Exception as exc:
+            st.error(f"Could not read that workbook: {exc}")
+    manual = st.text_area("Or paste products manually, one per line", placeholder="JOSAM 30002-5A-Z-50 | Floor drain | Qty 2")
+    if not items and manual.strip():
+        from product_finder.rfq_builder import RFQItem
+        for line in _split_lines(manual):
+            parts=[p.strip() for p in line.split("|")]
+            items.append(RFQItem(description=parts[0], notes=" | ".join(parts[1:])))
+    if not items:
+        st.info("Upload a workbook or paste products to begin.")
+        return
+    df=pd.DataFrame([x.to_row() for x in items])
+    edited=st.data_editor(df, use_container_width=True, hide_index=True, num_rows="dynamic", column_config={
+        "include":st.column_config.CheckboxColumn("Include", default=True),
+        "quantity":st.column_config.NumberColumn("Qty", min_value=1, step=1),
+        "product_link":st.column_config.LinkColumn("Product link"),
+        "spec_link":st.column_config.LinkColumn("Spec link"),
+    })
+    selected=edited[edited["include"]==True].to_dict("records") if "include" in edited else edited.to_dict("records")
+    st.markdown("### Quote details")
+    a,b,c=st.columns(3)
+    with a:
+        project_name=st.text_input("Project name", value="Bldg D 310 & 311")
+        project_number=st.text_input("Project number")
+        ship_to=st.text_input("Ship-to city/state/ZIP", placeholder="Long Beach, CA 90802")
+    with b:
+        needed_by=st.date_input("Required delivery date", value=None)
+        substitutions=st.selectbox("Substitutions", ["No substitutions without written approval", "Approved equals allowed", "Equivalent products may be quoted separately"])
+        tax_exempt=st.checkbox("Tax-exempt purchase")
+    with c:
+        contact_name=st.text_input("Contact name")
+        contact_email=st.text_input("Contact email")
+        contact_phone=st.text_input("Contact phone")
+    notes=st.text_area("RFQ notes", placeholder="Include current stock, manufacturer lead time, freight, quote expiration, and earliest delivery date.")
+    if not selected:
+        st.warning("Select at least one product.")
+        return
+    needed_text=needed_by.isoformat() if needed_by else ""
+    email=build_rfq_email(project_name,ship_to,needed_text,contact_name,contact_email,selected,substitutions,tax_exempt,notes)
+    st.markdown("### Email-ready RFQ")
+    st.code(email, language=None)
+    project={"project_name":project_name,"project_number":project_number,"ship_to":ship_to,"needed_by":needed_text,"contact_name":contact_name,"contact_email":contact_email,"contact_phone":contact_phone,"substitutions":substitutions,"tax_exempt":tax_exempt,"email_draft":email}
+    data=create_rfq_workbook(project,selected)
+    filename=(clean_text(project_name).replace(" ","_") or "Product")+"_RFQ.xlsx"
+    st.download_button("Download RFQ workbook",data=data,file_name=filename,mime=EXCEL_MIME,use_container_width=True)
+
+
 def main() -> None:
     st.set_page_config(page_title="Product Hunter Pro", page_icon="🔎", layout="wide")
     st.markdown("""<style>
@@ -824,8 +881,11 @@ def main() -> None:
         return
 
     with st.sidebar:
-        app_mode = st.radio("Workspace", ["Product Search", "Exact Product From Image", "Spec Sheet Compare", "Project Intelligence", "Procurement Control Center", "Purchase Tracker"], horizontal=False)
+        app_mode = st.radio("Workspace", ["Product Search", "Request Quotes", "Exact Product From Image", "Spec Sheet Compare", "Project Intelligence", "Procurement Control Center", "Purchase Tracker"], horizontal=False)
 
+    if app_mode == "Request Quotes":
+        _render_request_quotes()
+        return
     if app_mode == "Spec Sheet Compare":
         _, openai_api_key = _resolve_api_keys(config)
         _render_spec_sheet_compare(config, openai_api_key)
