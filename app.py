@@ -47,7 +47,7 @@ from product_finder.procurement_controls import (
 
 
 APP_TITLE = "Product Hunter Pro"
-APP_VERSION = "23.0"
+APP_VERSION = "25.0"
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -995,7 +995,7 @@ def _format_epoch(value: object) -> str:
 
 
 def _render_dashboard_workspace() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v23</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v25</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
     kb = ProductKnowledgeBase()
     stats = kb.stats()
     run_stats = kb.research_run_stats()
@@ -1053,7 +1053,7 @@ def _render_dashboard_workspace() -> None:
 
 
 def _render_knowledge_base_workspace() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Product Intelligence · v23</div><h1>Knowledge Base</h1><p>Review verified products, inspect cached research, export intelligence, and manage stored evidence.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Product Intelligence · v25</div><h1>Knowledge Base</h1><p>Review verified products, inspect cached research, export intelligence, and manage stored evidence.</p></div>""", unsafe_allow_html=True)
     kb = ProductKnowledgeBase()
     stats = kb.stats()
     c1, c2, c3, c4 = st.columns(4)
@@ -1120,102 +1120,148 @@ def _render_knowledge_base_workspace() -> None:
         st.info("The SQLite knowledge base is suitable for one Streamlit deployment. A shared PostgreSQL or Supabase database is recommended before multi-user production use.")
 
 
-def _workspace_css(theme: str, density: str) -> str:
-    """Return a full application theme with reliable text contrast in both modes."""
+def _workspace_css(theme: str, density: str, text_size: str = "Standard") -> str:
+    # Return a high-contrast, accessible application theme for both display modes.
     dark = theme == "Dark"
     if dark:
-        bg, surface, surface2 = "#0b0f17", "#111827", "#172033"
-        border, text, muted = "#2b3648", "#f3f6fb", "#a9b4c5"
-        nav, nav2 = "#080c13", "#0f1724"
-        input_bg, hover, selected = "#101826", "#182236", "#183a5f"
-        success, warning, danger = "#34d399", "#fbbf24", "#fb7185"
-        shadow = "0 1px 2px rgba(0,0,0,.34),0 8px 24px rgba(0,0,0,.18)"
+        colors = {
+            "bg": "#0b0f16", "surface": "#121923", "surface2": "#192332",
+            "surface3": "#202c3d", "border": "#344256", "border_strong": "#506079",
+            "text": "#f7f9fc", "text_strong": "#ffffff", "muted": "#bdc8d8",
+            "subtle": "#98a7bb", "nav": "#080c12", "nav2": "#101826",
+            "input": "#0f1722", "hover": "#1c293a", "selected": "#183b60",
+            "link": "#74b9f2", "focus": "#6cb8f5", "success": "#54d79b",
+            "warning": "#ffd166", "danger": "#ff8a9a", "info_bg": "#122943",
+            "success_bg": "#103326", "warning_bg": "#3a2d0e", "danger_bg": "#3a1820",
+            "shadow": "0 1px 2px rgba(0,0,0,.42),0 10px 30px rgba(0,0,0,.22)",
+        }
     else:
-        bg, surface, surface2 = "#f4f6f9", "#ffffff", "#f8fafc"
-        border, text, muted = "#d7dde7", "#172033", "#5f6b7a"
-        nav, nav2 = "#101827", "#172033"
-        input_bg, hover, selected = "#ffffff", "#f2f6fb", "#e7f1fb"
-        success, warning, danger = "#107c10", "#9a6700", "#c42b1c"
-        shadow = "0 1px 2px rgba(15,23,42,.07),0 8px 24px rgba(15,23,42,.05)"
+        colors = {
+            "bg": "#f3f5f8", "surface": "#ffffff", "surface2": "#f7f9fc",
+            "surface3": "#eef2f7", "border": "#cdd5df", "border_strong": "#9aa8b8",
+            "text": "#182230", "text_strong": "#0c1420", "muted": "#4f5f70",
+            "subtle": "#66778a", "nav": "#101827", "nav2": "#172033",
+            "input": "#ffffff", "hover": "#edf4fb", "selected": "#e5f1fc",
+            "link": "#005ea6", "focus": "#0f6cbd", "success": "#0b6f3c",
+            "warning": "#7a5400", "danger": "#a4262c", "info_bg": "#eaf4fd",
+            "success_bg": "#e8f5ee", "warning_bg": "#fff4ce", "danger_bg": "#fdebec",
+            "shadow": "0 1px 2px rgba(15,23,42,.08),0 10px 28px rgba(15,23,42,.06)",
+        }
     pad = ".48rem" if density == "Compact" else ".78rem"
-    control = "2.15rem" if density == "Compact" else "2.55rem"
-    row_height = "31px" if density == "Compact" else "39px"
-    return f"""<style>
-    :root{{--ph-bg:{bg};--ph-surface:{surface};--ph-surface2:{surface2};--ph-border:{border};--ph-text:{text};--ph-muted:{muted};--ph-accent:#0f6cbd;--ph-accent-hover:#115ea3;--ph-nav:{nav};--ph-nav2:{nav2};--ph-input:{input_bg};--ph-hover:{hover};--ph-selected:{selected};--ph-success:{success};--ph-warning:{warning};--ph-danger:{danger};--ph-shadow:{shadow};}}
-    html,body,[class*="css"]{{font-family:"Segoe UI Variable","Segoe UI",Inter,Arial,sans-serif;}}
-    .stApp,.stApp>header{{background:var(--ph-bg);color:var(--ph-text);}}
+    control = "2.2rem" if density == "Compact" else "2.65rem"
+    row_height = "32px" if density == "Compact" else "41px"
+    base_font = "15px" if text_size == "Standard" else "17px"
+    small_font = "12.5px" if text_size == "Standard" else "14px"
+    c = colors
+    return f'''<style>
+    :root{{--ph-bg:{c["bg"]};--ph-surface:{c["surface"]};--ph-surface2:{c["surface2"]};--ph-surface3:{c["surface3"]};--ph-border:{c["border"]};--ph-border-strong:{c["border_strong"]};--ph-text:{c["text"]};--ph-text-strong:{c["text_strong"]};--ph-muted:{c["muted"]};--ph-subtle:{c["subtle"]};--ph-accent:#0f6cbd;--ph-accent-hover:#115ea3;--ph-link:{c["link"]};--ph-focus:{c["focus"]};--ph-nav:{c["nav"]};--ph-nav2:{c["nav2"]};--ph-input:{c["input"]};--ph-hover:{c["hover"]};--ph-selected:{c["selected"]};--ph-success:{c["success"]};--ph-warning:{c["warning"]};--ph-danger:{c["danger"]};--ph-info-bg:{c["info_bg"]};--ph-success-bg:{c["success_bg"]};--ph-warning-bg:{c["warning_bg"]};--ph-danger-bg:{c["danger_bg"]};--ph-shadow:{c["shadow"]};--ph-font:{base_font};--ph-small:{small_font};}}
+    html,body,[class*="css"]{{font-family:"Segoe UI Variable","Segoe UI",Inter,Arial,sans-serif;font-size:var(--ph-font);}}
+    body,.stApp,.stApp>header{{background:var(--ph-bg);color:var(--ph-text);}}
     .block-container{{max-width:1680px;padding:1rem 1.35rem 4rem;}}
     .main *{{box-sizing:border-box;}}
-    p,li,span,label,div[data-testid="stMarkdownContainer"],div[data-testid="stCaptionContainer"],.stCaption{{color:var(--ph-text);}}
-    small,.stCaption,[data-testid="stCaptionContainer"],.muted{{color:var(--ph-muted)!important;}}
-    h1,h2,h3,h4,h5,h6{{color:var(--ph-text)!important;font-family:"Segoe UI Variable","Segoe UI",Inter,Arial,sans-serif;letter-spacing:-.018em;}}
-    a{{color:#4da3e6;}}
-    code{{color:var(--ph-text);background:var(--ph-surface2);}}
 
-    [data-testid="stSidebar"]{{background:linear-gradient(180deg,var(--ph-nav),var(--ph-nav2));border-right:1px solid #263247;}}
-    [data-testid="stSidebar"] p,[data-testid="stSidebar"] span,[data-testid="stSidebar"] label,[data-testid="stSidebar"] h1,[data-testid="stSidebar"] h2,[data-testid="stSidebar"] h3{{color:#eef4fb!important;}}
-    [data-testid="stSidebar"] small,[data-testid="stSidebar"] [data-testid="stCaptionContainer"]{{color:#aebbd0!important;}}
-    [data-testid="stSidebar"] hr{{border-color:#324056;}}
-    [data-testid="stSidebar"] [data-baseweb="radio"]>div{{gap:.18rem;}}
-    [data-testid="stSidebar"] [role="radiogroup"] label{{padding:.35rem .45rem;border-radius:5px;}}
-    [data-testid="stSidebar"] [role="radiogroup"] label:hover{{background:rgba(255,255,255,.07);}}
+    /* Global readable foregrounds */
+    .stApp p,.stApp li,.stApp label,.stApp span,.stApp strong,.stApp em,.stApp div[data-testid="stMarkdownContainer"],.stApp div[data-testid="stCaptionContainer"]{{color:var(--ph-text);}}
+    .stApp small,.stCaption,[data-testid="stCaptionContainer"],.muted{{color:var(--ph-muted)!important;font-size:var(--ph-small);}}
+    h1,h2,h3,h4,h5,h6{{color:var(--ph-text-strong)!important;font-family:"Segoe UI Variable","Segoe UI",Inter,Arial,sans-serif;letter-spacing:-.018em;line-height:1.24;}}
+    a,a:visited{{color:var(--ph-link)!important;text-decoration-thickness:1px;text-underline-offset:2px;}}
+    a:hover{{text-decoration:underline;}}
+    code,kbd,pre{{color:var(--ph-text-strong)!important;background:var(--ph-surface2)!important;border-color:var(--ph-border)!important;}}
+    hr{{border-color:var(--ph-border)!important;}}
 
-    input,textarea,[data-baseweb="select"]>div,[data-baseweb="base-input"]{{background:var(--ph-input)!important;color:var(--ph-text)!important;border-color:var(--ph-border)!important;}}
-    input::placeholder,textarea::placeholder{{color:var(--ph-muted)!important;opacity:.82;}}
+    /* Keyboard focus and accessibility */
+    button:focus-visible,input:focus-visible,textarea:focus-visible,[role="combobox"]:focus-visible,[role="tab"]:focus-visible,a:focus-visible{{outline:3px solid var(--ph-focus)!important;outline-offset:2px!important;box-shadow:none!important;}}
+    ::selection{{background:var(--ph-selected);color:var(--ph-text-strong);}}
+
+    /* Sidebar */
+    [data-testid="stSidebar"]{{background:linear-gradient(180deg,var(--ph-nav),var(--ph-nav2));border-right:1px solid #35435a;}}
+    [data-testid="stSidebar"] p,[data-testid="stSidebar"] span,[data-testid="stSidebar"] label,[data-testid="stSidebar"] h1,[data-testid="stSidebar"] h2,[data-testid="stSidebar"] h3,[data-testid="stSidebar"] strong{{color:#f4f7fb!important;}}
+    [data-testid="stSidebar"] small,[data-testid="stSidebar"] [data-testid="stCaptionContainer"]{{color:#c2cddd!important;}}
+    [data-testid="stSidebar"] hr{{border-color:#3b4960!important;}}
+    [data-testid="stSidebar"] [role="radiogroup"] label{{padding:.38rem .48rem;border-radius:5px;}}
+    [data-testid="stSidebar"] [role="radiogroup"] label:hover{{background:rgba(255,255,255,.09);}}
+    [data-testid="stSidebar"] input,[data-testid="stSidebar"] textarea,[data-testid="stSidebar"] [data-baseweb="select"]>div{{color:#111827!important;background:#fff!important;border-color:#aeb9c7!important;}}
+    [data-testid="stSidebar"] [data-baseweb="select"] span{{color:#111827!important;}}
+
+    /* Inputs and menus */
+    input,textarea,[data-baseweb="select"]>div,[data-baseweb="base-input"]{{background:var(--ph-input)!important;color:var(--ph-text-strong)!important;border-color:var(--ph-border-strong)!important;}}
+    input::placeholder,textarea::placeholder{{color:var(--ph-subtle)!important;opacity:1;}}
     [data-baseweb="select"] span,[data-baseweb="popover"] *{{color:var(--ph-text)!important;}}
-    [data-baseweb="popover"],[role="listbox"],[data-baseweb="menu"]{{background:var(--ph-surface)!important;color:var(--ph-text)!important;}}
-    [role="option"]:hover{{background:var(--ph-hover)!important;}}
-    [data-testid="stSidebar"] input,[data-testid="stSidebar"] textarea,[data-testid="stSidebar"] [data-baseweb="select"]>div,[data-testid="stSidebar"] [data-baseweb="select"] span{{color:#111827!important;background:#fff!important;}}
+    [data-baseweb="popover"],[role="listbox"],[data-baseweb="menu"]{{background:var(--ph-surface)!important;color:var(--ph-text)!important;border-color:var(--ph-border)!important;}}
+    [role="option"]{{color:var(--ph-text)!important;background:var(--ph-surface)!important;}}
+    [role="option"]:hover,[aria-selected="true"][role="option"]{{background:var(--ph-selected)!important;color:var(--ph-text-strong)!important;}}
+    [data-testid="stFileUploader"]{{color:var(--ph-text)!important;}}
+    [data-testid="stFileUploaderDropzone"]{{background:var(--ph-surface2)!important;border-color:var(--ph-border-strong)!important;}}
+    [data-testid="stFileUploaderDropzone"] *{{color:var(--ph-text)!important;}}
 
-    .app-shell{{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.55rem .75rem;margin:0 0 .7rem;background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:7px;box-shadow:0 1px 2px rgba(15,23,42,.04);}}
-    .app-shell .brand{{display:flex;align-items:center;gap:.55rem;font-weight:700;color:var(--ph-text);}}
-    .app-shell .brandmark{{width:28px;height:28px;border-radius:6px;display:grid;place-items:center;background:linear-gradient(135deg,#0f6cbd,#4f46e5);color:white;font-size:.78rem;box-shadow:inset 0 0 0 1px rgba(255,255,255,.2);}}
-    .app-shell .meta{{font-size:.76rem;color:var(--ph-muted);display:flex;align-items:center;gap:.65rem;}}
-    .status-dot{{width:7px;height:7px;border-radius:999px;background:#2bb673;display:inline-block;box-shadow:0 0 0 3px rgba(43,182,115,.12);}}
+    /* Shell and hero */
+    .app-shell{{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.6rem .78rem;margin:0 0 .75rem;background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:7px;box-shadow:0 1px 2px rgba(15,23,42,.05);}}
+    .app-shell .brand{{display:flex;align-items:center;gap:.58rem;font-weight:720;color:var(--ph-text-strong);}}
+    .app-shell .brandmark{{width:29px;height:29px;border-radius:6px;display:grid;place-items:center;background:linear-gradient(135deg,#0f6cbd,#4f46e5);color:#fff!important;font-size:.78rem;}}
+    .app-shell .meta{{font-size:.77rem;color:var(--ph-muted)!important;display:flex;align-items:center;gap:.65rem;}}
+    .app-shell .meta *{{color:var(--ph-muted)!important;}}
+    .status-dot{{width:7px;height:7px;border-radius:999px;background:#2bb673;display:inline-block;box-shadow:0 0 0 3px rgba(43,182,115,.14);}}
+    .hero{{padding:1.35rem 1.55rem;border-radius:8px;background:linear-gradient(112deg,#101827 0%,#15385f 55%,#0f6cbd 100%);color:#fff!important;margin:.15rem 0 .85rem;box-shadow:0 6px 24px rgba(15,23,42,.18);border:1px solid rgba(255,255,255,.1);}}
+    .hero *{{color:#fff!important;}}.hero h1{{margin:0;font-size:1.95rem;font-weight:700}}.hero p{{margin:.4rem 0 0;color:#e6f2ff!important;max-width:1120px;line-height:1.55}}.hero .eyebrow{{text-transform:uppercase;letter-spacing:.12em;font-size:.69rem;color:#b9e0ff!important;font-weight:750;margin-bottom:.3rem;}}
+    .commandbar{{display:flex;align-items:center;flex-wrap:wrap;gap:.44rem;background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:6px;padding:.48rem .68rem;margin-bottom:.8rem;box-shadow:0 1px 2px rgba(15,23,42,.05);font-size:.84rem;color:var(--ph-muted)!important;}}
+    .commandbar span{{color:var(--ph-muted)!important;}}.commandbar .pill{{background:var(--ph-selected);color:var(--ph-link)!important;border:1px solid rgba(15,108,189,.35);border-radius:4px;padding:.24rem .52rem;font-weight:700;}}
 
-    .hero{{padding:1.3rem 1.5rem;border-radius:8px;background:linear-gradient(112deg,#101827 0%,#15385f 55%,#0f6cbd 100%);color:white;margin:.15rem 0 .85rem;box-shadow:0 6px 24px rgba(15,23,42,.16);border:1px solid rgba(255,255,255,.08);}}
-    .hero h1{{color:white!important;margin:0;font-size:1.95rem;font-weight:680}}.hero p{{margin:.38rem 0 0;color:#dbeafe!important;max-width:1120px}}.hero .eyebrow{{text-transform:uppercase;letter-spacing:.12em;font-size:.67rem;color:#9bd2ff!important;font-weight:700;margin-bottom:.3rem;}}
-    .commandbar{{display:flex;align-items:center;gap:.42rem;background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:6px;padding:.45rem .65rem;margin-bottom:.8rem;box-shadow:0 1px 2px rgba(15,23,42,.05);font-size:.82rem;color:var(--ph-muted)}}
-    .commandbar .pill{{background:var(--ph-selected);color:#2f8bd1;border:1px solid rgba(15,108,189,.3);border-radius:4px;padding:.22rem .5rem;font-weight:650;}}
+    /* Cards, metrics, buttons */
     .section-card,div[data-testid="stMetric"]{{background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:6px;box-shadow:var(--ph-shadow);}}
     div[data-testid="stMetric"]{{padding:{pad} 1rem;}}
-    div[data-testid="stMetricLabel"]{{font-size:.72rem;color:var(--ph-muted)!important;text-transform:uppercase;letter-spacing:.05em;}}
-    div[data-testid="stMetricValue"]{{font-size:1.5rem;font-weight:680;color:var(--ph-text)!important;}}
+    div[data-testid="stMetricLabel"]{{font-size:.73rem;color:var(--ph-muted)!important;text-transform:uppercase;letter-spacing:.05em;font-weight:650;}}
+    div[data-testid="stMetricValue"]{{font-size:1.55rem;font-weight:720;color:var(--ph-text-strong)!important;}}
     div[data-testid="stMetricDelta"]{{color:var(--ph-muted)!important;}}
+    div.stButton>button,div.stDownloadButton>button{{border-radius:4px;font-weight:650;min-height:{control};border:1px solid var(--ph-border-strong)!important;background:var(--ph-surface)!important;color:var(--ph-text-strong)!important;}}
+    div.stButton>button:hover,div.stDownloadButton>button:hover{{border-color:var(--ph-accent)!important;color:var(--ph-link)!important;background:var(--ph-hover)!important;}}
+    div.stButton>button[kind="primary"],div.stDownloadButton>button[kind="primary"]{{background:var(--ph-accent)!important;color:#fff!important;border-color:var(--ph-accent)!important;}}
+    div.stButton>button[kind="primary"] *,div.stDownloadButton>button[kind="primary"] *{{color:#fff!important;}}
+    div.stButton>button[kind="primary"]:hover,div.stDownloadButton>button[kind="primary"]:hover{{background:var(--ph-accent-hover)!important;color:#fff!important;}}
+    button:disabled{{opacity:.62!important;color:var(--ph-muted)!important;background:var(--ph-surface2)!important;}}
 
-    div.stButton>button,div.stDownloadButton>button{{border-radius:4px;font-weight:620;min-height:{control};border-color:var(--ph-border);}}
-    div.stButton>button[kind="primary"],div.stDownloadButton>button[kind="primary"]{{background:#0f6cbd;color:#fff;border-color:#0f6cbd;}}
-    div.stButton>button:hover,div.stDownloadButton>button:hover{{border-color:#0f6cbd;color:#0f6cbd;}}
-    div.stButton>button[kind="primary"]:hover,div.stDownloadButton>button[kind="primary"]:hover{{background:#115ea3;color:#fff;}}
+    /* Data grids */
+    [data-testid="stDataFrame"],[data-testid="stDataEditor"]{{background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:5px;overflow:hidden;box-shadow:0 1px 2px rgba(15,23,42,.04);}}
+    [data-testid="stDataFrame"] *,[data-testid="stDataEditor"] *{{color:var(--ph-text)!important;}}
+    [data-testid="stDataFrame"] canvas,[data-testid="stDataEditor"] canvas{{background:var(--ph-surface)!important;}}
+    [data-testid="stDataFrame"] [role="columnheader"],[data-testid="stDataEditor"] [role="columnheader"]{{background:var(--ph-surface3)!important;color:var(--ph-text-strong)!important;font-weight:700;}}
+    [data-testid="stDataFrame"] [role="gridcell"],[data-testid="stDataEditor"] [role="gridcell"]{{min-height:{row_height};color:var(--ph-text)!important;background:var(--ph-surface)!important;}}
+    [data-testid="stDataFrame"] [role="row"]:hover [role="gridcell"],[data-testid="stDataEditor"] [role="row"]:hover [role="gridcell"]{{background:var(--ph-hover)!important;}}
 
-    [data-testid="stDataFrame"],[data-testid="stDataEditor"]{{background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:5px;overflow:hidden;box-shadow:0 1px 2px rgba(15,23,42,.035);}}
-    [data-testid="stDataFrame"] *,[data-testid="stDataEditor"] *{{color:var(--ph-text);}}
-    [data-testid="stDataFrame"] canvas,[data-testid="stDataEditor"] canvas{{background:var(--ph-surface);}}
-    [data-testid="stDataFrame"] [role="columnheader"],[data-testid="stDataEditor"] [role="columnheader"]{{background:var(--ph-surface2)!important;color:var(--ph-text)!important;font-weight:650;}}
-    [data-testid="stDataFrame"] [role="gridcell"],[data-testid="stDataEditor"] [role="gridcell"]{{min-height:{row_height};color:var(--ph-text)!important;}}
-
+    /* Tabs, expanders, alerts, tooltips */
     [data-baseweb="tab-list"]{{gap:.05rem;border-bottom:1px solid var(--ph-border);background:var(--ph-surface);padding:0 .35rem;}}
-    [data-baseweb="tab"]{{border-radius:3px 3px 0 0;padding:.52rem .82rem;font-weight:620;color:var(--ph-muted)!important;}}
-    [data-baseweb="tab"][aria-selected="true"]{{color:#4da3e6!important;background:var(--ph-selected);}}
+    [data-baseweb="tab"]{{border-radius:3px 3px 0 0;padding:.55rem .84rem;font-weight:650;color:var(--ph-muted)!important;}}
+    [data-baseweb="tab"] *{{color:inherit!important;}}
+    [data-baseweb="tab"][aria-selected="true"]{{color:var(--ph-link)!important;background:var(--ph-selected);border-bottom:2px solid var(--ph-accent);}}
     [data-testid="stExpander"]{{border:1px solid var(--ph-border);border-radius:6px;background:var(--ph-surface);}}
-    [data-testid="stExpander"] summary,[data-testid="stExpander"] summary *{{color:var(--ph-text)!important;}}
-    .stAlert{{border-radius:5px;color:var(--ph-text);}}
-    [data-testid="stToast"]{{background:var(--ph-surface);color:var(--ph-text);border:1px solid var(--ph-border);}}
+    [data-testid="stExpander"] summary,[data-testid="stExpander"] summary *{{color:var(--ph-text-strong)!important;}}
+    .stAlert{{border-radius:5px;color:var(--ph-text)!important;border:1px solid var(--ph-border)!important;}}
+    .stAlert *{{color:var(--ph-text)!important;}}
+    [data-testid="stNotificationContentInfo"]{{background:var(--ph-info-bg)!important;}}
+    [data-testid="stNotificationContentSuccess"]{{background:var(--ph-success-bg)!important;}}
+    [data-testid="stNotificationContentWarning"]{{background:var(--ph-warning-bg)!important;}}
+    [data-testid="stNotificationContentError"]{{background:var(--ph-danger-bg)!important;}}
+    [data-testid="stToast"]{{background:var(--ph-surface)!important;color:var(--ph-text)!important;border:1px solid var(--ph-border)!important;}}
+    [data-baseweb="tooltip"]{{background:var(--ph-text-strong)!important;color:var(--ph-bg)!important;}}
 
-    .result-highlight{{background:var(--ph-surface);border:1px solid var(--ph-border);border-left:3px solid #0f6cbd;border-radius:6px;padding:.75rem .9rem;margin:.25rem 0 .65rem;}}
-    .result-highlight strong{{color:var(--ph-text);}}.result-highlight span{{color:var(--ph-muted);}}
-    .empty-state{{text-align:center;padding:2rem 1rem;border:1px dashed var(--ph-border);border-radius:8px;background:var(--ph-surface);color:var(--ph-muted);}}
-    .empty-state h3{{margin:.25rem 0;color:var(--ph-text)!important;}}
-    .kbd{{font-size:.7rem;border:1px solid var(--ph-border);border-bottom-width:2px;border-radius:4px;padding:.08rem .32rem;background:var(--ph-surface2);color:var(--ph-text);}}
+    .result-highlight{{background:var(--ph-surface);border:1px solid var(--ph-border);border-left:4px solid var(--ph-accent);border-radius:6px;padding:.78rem .95rem;margin:.25rem 0 .65rem;}}
+    .result-highlight strong{{color:var(--ph-text-strong)!important;}}.result-highlight span{{color:var(--ph-muted)!important;}}
+    .empty-state{{text-align:center;padding:2rem 1rem;border:1px dashed var(--ph-border-strong);border-radius:8px;background:var(--ph-surface);color:var(--ph-muted)!important;}}
+    .empty-state *{{color:var(--ph-muted)!important;}}.empty-state h3{{margin:.25rem 0;color:var(--ph-text-strong)!important;}}
+    .kbd{{font-size:.7rem;border:1px solid var(--ph-border);border-bottom-width:2px;border-radius:4px;padding:.08rem .32rem;background:var(--ph-surface2);color:var(--ph-text-strong)!important;}}
+    .resource-card{{background:var(--ph-surface2);border:1px solid var(--ph-border);padding:.7rem .8rem;margin:.45rem 0 .7rem;color:var(--ph-text)!important;font-size:.84rem;line-height:1.5;border-radius:5px;}}
+    .resource-card *{{color:var(--ph-text)!important;}}.resource-card strong{{color:var(--ph-text-strong)!important;}}
+    .contrast-note{{display:inline-flex;align-items:center;gap:.35rem;padding:.22rem .5rem;border-radius:999px;background:var(--ph-success-bg);color:var(--ph-success)!important;border:1px solid color-mix(in srgb,var(--ph-success) 35%,transparent);font-size:.74rem;font-weight:700;}}
 
-    @media(max-width:900px){{.block-container{{padding:.65rem .7rem 3rem}}.hero{{padding:1rem}}.hero h1{{font-size:1.55rem}}.app-shell .meta{{display:none}}}}
-    </style>"""
+    @media(max-width:900px){{.block-container{{padding:.65rem .7rem 3rem}}.hero{{padding:1rem}}.hero h1{{font-size:1.55rem}}.app-shell .meta{{display:none}}.commandbar{{font-size:.78rem}}}}
+    @media(prefers-reduced-motion:reduce){{*,*::before,*::after{{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important;}}}}
+    </style>'''
 
 def main() -> None:
     st.set_page_config(page_title="Product Hunter Pro", page_icon="🔎", layout="wide")
     st.session_state.setdefault("ui_theme", "Light")
     st.session_state.setdefault("ui_density", "Compact")
-    st.markdown(_workspace_css(st.session_state["ui_theme"], st.session_state["ui_density"]), unsafe_allow_html=True)
+    st.session_state.setdefault("ui_text_size", "Standard")
+    st.markdown(_workspace_css(st.session_state["ui_theme"], st.session_state["ui_density"], st.session_state["ui_text_size"]), unsafe_allow_html=True)
     config = load_config(_secret_getter)
 
     if not _password_gate(config):
@@ -1228,14 +1274,17 @@ def main() -> None:
 
     with st.sidebar:
         st.markdown("### PRODUCT HUNTER")
-        st.caption("Procurement Intelligence Platform · v23")
+        st.caption("Procurement Intelligence Platform · v25")
         app_mode = st.radio("Workspace", ["Dashboard", "Product Search", "Knowledge Base", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
         with st.expander("Appearance"):
             theme = st.selectbox("Theme", ["Light", "Dark"], index=0 if st.session_state["ui_theme"] == "Light" else 1)
             density = st.selectbox("Table density", ["Compact", "Comfortable"], index=0 if st.session_state["ui_density"] == "Compact" else 1)
-            if theme != st.session_state["ui_theme"] or density != st.session_state["ui_density"]:
+            text_size = st.selectbox("Text size", ["Standard", "Large"], index=0 if st.session_state["ui_text_size"] == "Standard" else 1)
+            st.markdown('<span class="contrast-note">✓ High-contrast text enabled</span>', unsafe_allow_html=True)
+            if theme != st.session_state["ui_theme"] or density != st.session_state["ui_density"] or text_size != st.session_state["ui_text_size"]:
                 st.session_state["ui_theme"] = theme
                 st.session_state["ui_density"] = density
+                st.session_state["ui_text_size"] = text_size
                 st.rerun()
         with st.expander("Quick navigation"):
             quick_target = st.selectbox("Go to", ["Dashboard", "Product Search", "Knowledge Base", "Project Intelligence", "Spec Sheet Compare", "Request Quotes", "Purchase Tracker"], key="quick_nav_target")
@@ -1271,7 +1320,7 @@ def main() -> None:
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
-    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v23</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Research</span><span>Evidence</span><span>Products</span><span>Documents</span><span>Suppliers</span><span>RFQ</span><span>Export</span></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v25</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Research</span><span>Evidence</span><span>Products</span><span>Documents</span><span>Suppliers</span><span>RFQ</span><span>Export</span></div>""", unsafe_allow_html=True)
 
     command_cols = st.columns([1, 1, 1, 1, 5])
     if command_cols[0].button("New research", use_container_width=True):
@@ -1291,8 +1340,25 @@ def main() -> None:
         st.header("Search settings")
         location = st.text_input("City, state, or ZIP", value=config.default_location)
         search_everywhere = st.checkbox("Research Everywhere", value=True, help="Runs multiple focused searches for official manufacturer pages, documents, pricing, lead times, distributors, local suppliers, and legacy products.")
-        research_depth = st.selectbox("Research depth", ["Standard", "Deep"], index=0, help="Deep research runs more document, lifecycle, CAD/BIM, warranty, and manufacturer-domain searches. It may take longer.")
-        st.session_state["force_research_refresh"] = st.checkbox("Refresh live sources", value=False, help="Ignore saved research and run a fresh provider search.")
+        resource_profile = st.selectbox(
+            "Resource profile",
+            ["Efficient", "Balanced", "Thorough"],
+            index={"Efficient": 0, "Balanced": 1, "Thorough": 2}.get(config.resource_profile, 1),
+            help="Efficient minimizes queries and concurrency. Balanced is recommended. Thorough uses more searches for difficult or high-value products.",
+        )
+        profile_settings = {
+            "Efficient": {"workers": 1, "budget": 6, "results": 12, "cache": 168, "timeout": 35},
+            "Balanced": {"workers": config.search_max_workers, "budget": config.search_query_budget, "results": 20, "cache": config.research_cache_hours, "timeout": config.search_request_timeout},
+            "Thorough": {"workers": min(5, max(3, config.search_max_workers + 1)), "budget": min(18, max(12, config.search_query_budget + 4)), "results": 35, "cache": 24, "timeout": min(90, max(60, config.search_request_timeout + 20))},
+        }[resource_profile]
+        research_depth = st.selectbox("Research depth", ["Standard", "Deep"], index=0, help="Deep research adds lifecycle, CAD/BIM, warranty, and manufacturer-domain searches. Use it only when the standard run is insufficient.")
+        st.session_state["force_research_refresh"] = st.checkbox("Refresh live sources", value=False, help="Ignore saved research and run a fresh provider search. Leave this off to reduce server and API usage.")
+        st.markdown(
+            f"<div class='resource-card'><strong>{resource_profile} plan</strong><br>"
+            f"Up to {profile_settings['budget']} focused queries · {profile_settings['workers']} concurrent worker(s) · "
+            f"{profile_settings['cache']}h research cache</div>",
+            unsafe_allow_html=True,
+        )
         try:
             kb_stats = ProductKnowledgeBase().stats()
             st.caption(f"Knowledge Base: {kb_stats['cached_research']} cached searches · {kb_stats['verified_products']} verified products")
@@ -1308,7 +1374,7 @@ def main() -> None:
         max_store_results = st.slider("Nearby stores per search term", min_value=1, max_value=10, value=4)
         max_spec_results = st.slider("Technical documents per search term", min_value=1, max_value=8, value=3)
         max_manufacturer_results = st.slider("Manufacturer sources per search term", min_value=1, max_value=8, value=4)
-        max_omni_results = st.slider("Broad web results per search term", min_value=5, max_value=50, value=20)
+        max_omni_results = st.slider("Broad web results per search term", min_value=5, max_value=50, value=profile_settings["results"])
         max_queries_per_input = st.slider("Search terms per image/input", min_value=1, max_value=4, value=2)
         with st.expander("Advanced"):
             country_code = st.text_input("Country code", value=config.country_code).lower().strip() or "us"
@@ -1573,6 +1639,10 @@ def main() -> None:
                     serpapi_api_key=serpapi_api_key, provider_order=config.search_provider_order,
                     country_code=country_code, language=language, max_results=max_omni_results,
                     force_refresh=st.session_state.get("force_research_refresh", False),
+                    cache_ttl_hours=profile_settings["cache"],
+                    max_workers=profile_settings["workers"],
+                    query_budget=profile_settings["budget"],
+                    request_timeout=profile_settings["timeout"],
                 )
                 omni_results.extend(provider_results)
                 if research_meta.get("cache_hit"):

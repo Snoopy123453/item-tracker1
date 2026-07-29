@@ -157,3 +157,12 @@ Version 19 adds a professional tabbed research workspace and routes normalized S
 ## v22 Big Patch
 
 Adds a procurement dashboard, research telemetry, saved result views, filtered CSV exports, and side-by-side evidence comparison.
+
+
+## v24 resource optimization
+
+The app now includes Efficient, Balanced, and Thorough research profiles. These profiles bound concurrent searches, cap query expansion, tune cache lifetime, and set request timeouts. Cached research is reused by default, and expired cache can be shown as a fallback if a live provider is temporarily unavailable.
+
+## v25 readability and accessibility
+
+Version 25 adds a high-contrast theme system, reliable light/dark foreground colors, an optional large-text mode, stronger focus indicators, improved status colors, and consistent styling for forms, tables, tabs, alerts, upload controls, and navigation.
