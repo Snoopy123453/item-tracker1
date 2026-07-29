@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import time
 from typing import Iterable
 from urllib.parse import urlparse
 
@@ -940,41 +941,140 @@ def _render_request_quotes() -> None:
     st.download_button("Download RFQ workbook",data=data,file_name=filename,mime=EXCEL_MIME,use_container_width=True)
 
 
+def _format_epoch(value: object) -> str:
+    try:
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(value)))
+    except (TypeError, ValueError, OSError):
+        return ""
+
+
+def _render_knowledge_base_workspace() -> None:
+    st.markdown("""<div class="hero"><div class="eyebrow">Product Intelligence · v21</div><h1>Knowledge Base</h1><p>Review verified products, inspect cached research, export intelligence, and manage stored evidence.</p></div>""", unsafe_allow_html=True)
+    kb = ProductKnowledgeBase()
+    stats = kb.stats()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Verified products", stats["verified_products"])
+    c2.metric("Cached searches", stats["cached_research"])
+    expired_removed = 0
+    with c3:
+        if st.button("Clean expired cache", use_container_width=True):
+            expired_removed = kb.clear_expired_cache()
+            st.success(f"Removed {expired_removed} expired cache record(s).")
+    snapshot = json.dumps(kb.export_snapshot(), indent=2).encode("utf-8")
+    c4.download_button("Export knowledge snapshot", data=snapshot, file_name="Product_Hunter_Knowledge_Base.json", mime="application/json", use_container_width=True)
+
+    verified_tab, cache_tab, settings_tab = st.tabs(["Verified products", "Research cache", "Workspace settings"])
+    with verified_tab:
+        rows = kb.list_verified_products()
+        if not rows:
+            st.info("No reviewed products yet. Save a decision from the Evidence viewer after running research.")
+        else:
+            df = pd.DataFrame([{
+                "Manufacturer": r.get("manufacturer", ""), "Model": r.get("model", ""),
+                "Product": r.get("title", ""), "Status": r.get("status", ""),
+                "Notes": r.get("notes", ""), "Updated": _format_epoch(r.get("updated_at")),
+                "Key": r.get("product_key", ""),
+            } for r in rows])
+            st.dataframe(df.drop(columns=["Key"]), use_container_width=True, hide_index=True, height=420)
+            selected_key = st.selectbox("Select a reviewed product", df["Key"].tolist(), format_func=lambda k: df.loc[df["Key"] == k, "Product"].iloc[0])
+            selected = next((r for r in rows if r.get("product_key") == selected_key), None)
+            if selected:
+                left, right = st.columns([2, 1])
+                with left:
+                    st.markdown(f"### {selected.get('title') or 'Reviewed product'}")
+                    st.write(f"**Manufacturer:** {selected.get('manufacturer') or 'Not recorded'}")
+                    st.write(f"**Model:** {selected.get('model') or 'Not recorded'}")
+                    st.write(f"**Status:** {selected.get('status') or 'Needs review'}")
+                    st.write(selected.get("notes") or "No reviewer notes.")
+                with right:
+                    evidence = selected.get("evidence") or []
+                    st.metric("Evidence records", len(evidence))
+                    if st.button("Delete reviewed product", type="secondary", use_container_width=True):
+                        kb.delete_verified_product(selected_key)
+                        st.success("Reviewed product deleted.")
+                        st.rerun()
+                if evidence:
+                    st.dataframe(pd.DataFrame(evidence), use_container_width=True, hide_index=True)
+    with cache_tab:
+        cache_rows = kb.list_cached_research()
+        if cache_rows:
+            cache_df = pd.DataFrame([{
+                "Query": r.get("query", ""), "Location": r.get("location", ""),
+                "Saved": _format_epoch(r.get("created_at")), "Expires": _format_epoch(r.get("expires_at")),
+            } for r in cache_rows])
+            st.dataframe(cache_df, use_container_width=True, hide_index=True, height=420)
+            st.caption("Cached research speeds up repeat searches. Refresh live sources when price, availability, or newly published documents matter.")
+            if st.button("Clear all research cache", use_container_width=True):
+                count = kb.clear_research_cache()
+                st.success(f"Cleared {count} cached research record(s).")
+                st.rerun()
+        else:
+            st.info("No cached research is stored yet.")
+    with settings_tab:
+        st.markdown("### Interface preferences")
+        st.write("Theme and table-density preferences are available in the sidebar and apply immediately to this browser session.")
+        st.info("The SQLite knowledge base is suitable for one Streamlit deployment. A shared PostgreSQL or Supabase database is recommended before multi-user production use.")
+
+
+def _workspace_css(theme: str, density: str) -> str:
+    dark = theme == "Dark"
+    bg = "#111318" if dark else "#f3f5f8"
+    surface = "#1b1f27" if dark else "#ffffff"
+    surface2 = "#232936" if dark else "#f8fafc"
+    border = "#343b49" if dark else "#d8dde6"
+    text = "#f3f4f6" if dark else "#1f2937"
+    muted = "#aeb6c3" if dark else "#5f6b7a"
+    nav = "#0b0d12" if dark else "#172033"
+    control = "2rem" if density == "Compact" else "2.45rem"
+    pad = ".55rem" if density == "Compact" else ".85rem"
+    return f"""<style>
+    :root{{--ph-bg:{bg};--ph-surface:{surface};--ph-surface2:{surface2};--ph-border:{border};--ph-text:{text};--ph-muted:{muted};--ph-accent:#0f6cbd;--ph-accent2:#2563eb;--ph-nav:{nav};}}
+    .stApp{{background:var(--ph-bg);color:var(--ph-text);}}
+    .block-container{{max-width:1600px;padding-top:.75rem;padding-bottom:3rem;}}
+    h1,h2,h3,h4{{color:var(--ph-text);font-family:Segoe UI Variable,Segoe UI,Inter,Arial,sans-serif;letter-spacing:-.018em;}}
+    [data-testid="stSidebar"]{{background:var(--ph-nav);border-right:1px solid #0a1020;}}
+    [data-testid="stSidebar"] *{{color:#eef2f7;}}
+    [data-testid="stSidebar"] input,[data-testid="stSidebar"] textarea,[data-testid="stSidebar"] [data-baseweb="select"] *{{color:#111827;}}
+    .hero{{padding:1.25rem 1.45rem;border-radius:8px;background:linear-gradient(105deg,#111827 0%,#15385f 58%,#0f6cbd 100%);color:white;margin:.15rem 0 .8rem;box-shadow:0 3px 12px rgba(15,23,42,.18);}}
+    .hero h1{{color:white;margin:0;font-size:1.85rem;font-weight:650}}.hero p{{margin:.35rem 0 0;color:#dbeafe;max-width:1080px}}.hero .eyebrow{{text-transform:uppercase;letter-spacing:.12em;font-size:.68rem;color:#93c5fd;font-weight:700;margin-bottom:.3rem;}}
+    .commandbar{{display:flex;align-items:center;gap:.45rem;background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:6px;padding:.45rem .65rem;margin-bottom:.8rem;box-shadow:0 1px 2px rgba(15,23,42,.05);font-size:.82rem;color:var(--ph-muted)}}
+    .commandbar .pill{{background:#e9f2ff;color:#0f5ea8;border:1px solid #bfd8f2;border-radius:4px;padding:.22rem .5rem;font-weight:650;}}
+    .section-card,div[data-testid="stMetric"]{{background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:6px;box-shadow:0 1px 2px rgba(15,23,42,.045);}}
+    div[data-testid="stMetric"]{{padding:{pad} 1rem;}}
+    div[data-testid="stMetricLabel"]{{font-size:.73rem;color:var(--ph-muted);text-transform:uppercase;letter-spacing:.045em;}}
+    div[data-testid="stMetricValue"]{{font-size:1.5rem;font-weight:650;color:var(--ph-text);}}
+    div.stButton>button,div.stDownloadButton>button{{border-radius:4px;font-weight:600;min-height:{control};}}
+    [data-testid="stDataFrame"]{{background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:5px;overflow:hidden;}}
+    [data-baseweb="tab-list"]{{gap:.05rem;border-bottom:1px solid var(--ph-border);background:var(--ph-surface);padding:0 .35rem;}}
+    [data-baseweb="tab"]{{border-radius:3px 3px 0 0;padding:.5rem .8rem;font-weight:600;}}
+    .stAlert{{border-radius:5px;}}
+    </style>"""
+
 def main() -> None:
     st.set_page_config(page_title="Product Hunter Pro", page_icon="🔎", layout="wide")
-    st.markdown("""<style>
-    :root{--ph-bg:#f4f5f7;--ph-surface:#ffffff;--ph-border:#d9dde5;--ph-text:#202124;--ph-muted:#5f6368;--ph-accent:#2563eb;--ph-accent2:#0f6cbd;--ph-nav:#1f2937;}
-    .stApp{background:var(--ph-bg);color:var(--ph-text);}
-    .block-container{max-width:1500px;padding-top:1.15rem;padding-bottom:3rem;}
-    h1,h2,h3{color:var(--ph-text);font-family:Segoe UI,Inter,Arial,sans-serif;letter-spacing:-.02em;}
-    h2{font-size:1.45rem;margin-top:1.1rem;}
-    [data-testid="stSidebar"]{background:var(--ph-nav);border-right:1px solid #111827;}
-    [data-testid="stSidebar"] *{color:#eef2f7;}
-    [data-testid="stSidebar"] input,[data-testid="stSidebar"] textarea,[data-testid="stSidebar"] [data-baseweb="select"] *{color:#111827;}
-    [data-testid="stSidebar"] hr{border-color:#3b4657;}
-    .hero{padding:1.4rem 1.55rem;border-radius:10px;background:linear-gradient(105deg,#0f172a 0%,#173b68 58%,#0f6cbd 100%);color:white;margin:.15rem 0 1rem;box-shadow:0 4px 14px rgba(15,23,42,.18);}
-    .hero h1{color:white;margin:0;font-size:2rem;font-weight:650}.hero p{margin:.42rem 0 0;color:#dbeafe;font-size:1rem;max-width:980px}.hero .eyebrow{text-transform:uppercase;letter-spacing:.12em;font-size:.72rem;color:#93c5fd;font-weight:700;margin-bottom:.35rem;}
-    .commandbar{display:flex;align-items:center;gap:.55rem;background:white;border:1px solid var(--ph-border);border-radius:8px;padding:.55rem .75rem;margin-bottom:1rem;box-shadow:0 1px 2px rgba(15,23,42,.04);font-size:.84rem;color:var(--ph-muted)}
-    .commandbar .pill{background:#eef4ff;color:#174ea6;border:1px solid #c7d7fe;border-radius:999px;padding:.25rem .55rem;font-weight:600;}
-    .section-card{background:white;border:1px solid var(--ph-border);border-radius:8px;padding:1rem 1.1rem;margin:.75rem 0;box-shadow:0 1px 3px rgba(15,23,42,.05)}
-    div[data-testid="stMetric"]{background:white;border:1px solid var(--ph-border);padding:.9rem 1rem;border-radius:8px;box-shadow:0 1px 3px rgba(15,23,42,.05)}
-    div[data-testid="stMetricLabel"]{font-size:.78rem;color:var(--ph-muted);text-transform:uppercase;letter-spacing:.04em;}
-    div[data-testid="stMetricValue"]{font-size:1.65rem;font-weight:650;}
-    div.stButton>button,div.stDownloadButton>button{border-radius:6px;font-weight:600;min-height:2.35rem;}
-    div.stButton>button[kind="primary"],div.stDownloadButton>button[kind="primary"]{background:var(--ph-accent2);border-color:var(--ph-accent2);}
-    [data-testid="stDataFrame"]{background:white;border:1px solid var(--ph-border);border-radius:7px;overflow:hidden;}
-    [data-baseweb="tab-list"]{gap:.15rem;border-bottom:1px solid var(--ph-border);}
-    [data-baseweb="tab"]{border-radius:5px 5px 0 0;padding:.55rem .9rem;font-weight:600;}
-    .stAlert{border-radius:7px;}
-    </style>""", unsafe_allow_html=True)
+    st.session_state.setdefault("ui_theme", "Light")
+    st.session_state.setdefault("ui_density", "Compact")
+    st.markdown(_workspace_css(st.session_state["ui_theme"], st.session_state["ui_density"]), unsafe_allow_html=True)
     config = load_config(_secret_getter)
 
     if not _password_gate(config):
         return
 
     with st.sidebar:
-        app_mode = st.radio("Workspace", ["Product Search", "Request Quotes", "Exact Product From Image", "Spec Sheet Compare", "Project Intelligence", "Procurement Control Center", "Purchase Tracker"], horizontal=False)
+        st.markdown("### PRODUCT HUNTER")
+        st.caption("Procurement Intelligence · v21")
+        app_mode = st.radio("Workspace", ["Product Search", "Knowledge Base", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
+        with st.expander("Appearance"):
+            theme = st.selectbox("Theme", ["Light", "Dark"], index=0 if st.session_state["ui_theme"] == "Light" else 1)
+            density = st.selectbox("Table density", ["Compact", "Comfortable"], index=0 if st.session_state["ui_density"] == "Compact" else 1)
+            if theme != st.session_state["ui_theme"] or density != st.session_state["ui_density"]:
+                st.session_state["ui_theme"] = theme
+                st.session_state["ui_density"] = density
+                st.rerun()
 
+    if app_mode == "Knowledge Base":
+        _render_knowledge_base_workspace()
+        return
     if app_mode == "Request Quotes":
         _render_request_quotes()
         return
@@ -997,7 +1097,18 @@ def main() -> None:
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
-    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v20</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">New research</span><span>Knowledge Base</span><span>•</span><span>Evidence Viewer</span><span>•</span><span>Spec verification</span><span>•</span><span>Excel & RFQ</span></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v21</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Research</span><span>Evidence</span><span>Products</span><span>Documents</span><span>Suppliers</span><span>RFQ</span><span>Export</span></div>""", unsafe_allow_html=True)
+
+    command_cols = st.columns([1, 1, 1, 1, 5])
+    if command_cols[0].button("New research", use_container_width=True):
+        st.session_state["product_barcode_search"] = ""
+        st.session_state["product_text_searches"] = ""
+        st.rerun()
+    if command_cols[1].button("Knowledge Base", use_container_width=True):
+        st.session_state["workspace_mode"] = "Knowledge Base"
+        st.rerun()
+    command_cols[2].button("Refresh", use_container_width=True, help="Enable Refresh live sources in Search settings before running research.")
+    command_cols[3].button("Help", use_container_width=True, help="Use Product Search for research, Evidence viewer for approval, and Request Quotes for vendor RFQs.")
 
     serpapi_api_key, openai_api_key, brave_api_key, searxng_url = _resolve_api_keys(config)
 
@@ -1049,12 +1160,13 @@ def main() -> None:
         st.markdown("### Product inputs")
         left, right = st.columns(2)
         with left:
-            barcode_searches = st.text_input("Optional UPC / barcode / manufacturer part number", placeholder="012345678905 or JOSAM 30000-5A-Z")
+            barcode_searches = st.text_input("Optional UPC / barcode / manufacturer part number", placeholder="012345678905 or JOSAM 30000-5A-Z", key="product_barcode_search")
             text_searches = st.text_area(
                 "Text searches, one per line",
                 value=st.session_state.get("project_search_queries", ""),
                 placeholder="black Nike hoodie\nCrucial 2TB NVMe SSD",
                 height=170,
+                key="product_text_searches",
             )
             uploaded_images = st.file_uploader(
                 "Upload product images",
@@ -1349,7 +1461,7 @@ def main() -> None:
         )
 
     overview_tab, evidence_tab, offers_tab, documents_tab, suppliers_tab, diagnostics_tab = st.tabs([
-        "Research overview", "Evidence viewer", "Offers", "Documents & manufacturer", "Suppliers", "Diagnostics"
+        "Overview", "Evidence", "Offers", "Documents", "Suppliers", "Diagnostics"
     ])
     with overview_tab:
         _show_omni_results(omni_results)

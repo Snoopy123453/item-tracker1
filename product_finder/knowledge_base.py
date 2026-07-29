@@ -135,6 +135,52 @@ class ProductKnowledgeBase:
             )
         return key
 
+
+    def list_cached_research(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT cache_key, query, location, created_at, expires_at FROM research_cache ORDER BY created_at DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_verified_products(self, limit: int = 500) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT product_key, manufacturer, model, title, status, notes, evidence_json, updated_at FROM verified_products ORDER BY updated_at DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["evidence"] = json.loads(item.pop("evidence_json", "[]"))
+            except json.JSONDecodeError:
+                item["evidence"] = []
+            output.append(item)
+        return output
+
+    def delete_verified_product(self, product_key: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM verified_products WHERE product_key=?", (product_key,))
+
+    def clear_expired_cache(self) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM research_cache WHERE expires_at<=?", (time.time(),))
+            return int(cursor.rowcount or 0)
+
+    def clear_research_cache(self) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM research_cache")
+            return int(cursor.rowcount or 0)
+
+    def export_snapshot(self) -> dict[str, Any]:
+        return {
+            "exported_at": time.time(),
+            "cached_research": self.list_cached_research(limit=10000),
+            "verified_products": self.list_verified_products(limit=10000),
+        }
+
     def stats(self) -> dict[str, int]:
         with self._connect() as conn:
             cached = conn.execute("SELECT COUNT(*) AS n FROM research_cache").fetchone()["n"]
