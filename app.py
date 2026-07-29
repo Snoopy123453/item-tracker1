@@ -38,6 +38,10 @@ from product_finder.project_intelligence import (
 )
 from product_finder.knowledge_base import ProductKnowledgeBase
 from product_finder.research_agent import ResearchAgent
+from product_finder.observability import (
+    clear_error_log, diagnostics_snapshot, recent_errors, recent_events,
+    record_event, record_exception, run_health_checks,
+)
 from product_finder.procurement_controls import (
     Requirement, append_audit, build_review_queue, classify_document,
     compare_requirements, create_procurement_control_workbook, data_health_checks,
@@ -47,7 +51,7 @@ from product_finder.procurement_controls import (
 
 
 APP_TITLE = "Product Hunter Pro"
-APP_VERSION = "26.0"
+APP_VERSION = "27.0"
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -1005,7 +1009,7 @@ def _format_epoch(value: object) -> str:
 
 
 def _render_dashboard_workspace() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v26</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v27</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
     kb = ProductKnowledgeBase()
     stats = kb.stats()
     run_stats = kb.research_run_stats()
@@ -1128,6 +1132,101 @@ def _render_knowledge_base_workspace() -> None:
         st.markdown("### Interface preferences")
         st.write("Theme and table-density preferences are available in the sidebar and apply immediately to this browser session.")
         st.info("The SQLite knowledge base is suitable for one Streamlit deployment. A shared PostgreSQL or Supabase database is recommended before multi-user production use.")
+
+
+def _render_system_center(config: AppConfig) -> None:
+    st.markdown("""<div class="hero"><div class="eyebrow">Enterprise Operations · v27</div><h1>System Center</h1><p>Validate service health, inspect incidents, export diagnostics, and resolve configuration problems without exposing secrets.</p></div>""", unsafe_allow_html=True)
+    serpapi_api_key, openai_api_key, brave_api_key, searxng_url = _resolve_api_keys(config)
+    db_path = ProductKnowledgeBase().path
+
+    action_cols = st.columns([1, 1, 1, 4])
+    run_now = action_cols[0].button("Run health checks", type="primary", use_container_width=True)
+    if action_cols[1].button("Clear incidents", use_container_width=True):
+        clear_error_log()
+        st.toast("Incident log cleared.")
+        st.rerun()
+    snapshot = diagnostics_snapshot(
+        app_version=APP_VERSION,
+        config_summary={
+            "provider_order": config.search_provider_order,
+            "searxng_configured": bool(searxng_url),
+            "openai_configured": bool(openai_api_key),
+            "serpapi_configured": bool(serpapi_api_key),
+            "resource_profile": config.resource_profile,
+            "knowledge_database": str(db_path),
+        },
+    )
+    action_cols[2].download_button(
+        "Export diagnostics",
+        data=json.dumps(snapshot, indent=2).encode("utf-8"),
+        file_name="Product_Hunter_Diagnostics.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+
+    if run_now or "v27_health_checks" not in st.session_state:
+        with st.spinner("Checking configured services..."):
+            st.session_state["v27_health_checks"] = [
+                item.to_row() for item in run_health_checks(
+                    searxng_url=searxng_url, openai_api_key=openai_api_key, db_path=db_path
+                )
+            ]
+        record_event("health_check", "System health checks completed", checks=len(st.session_state["v27_health_checks"]))
+
+    checks = pd.DataFrame(st.session_state.get("v27_health_checks", []))
+    if not checks.empty:
+        healthy = int(checks["status"].isin(["Healthy", "Configured"]).sum())
+        degraded = int(checks["status"].isin(["Degraded", "Review", "Not configured"]).sum())
+        down = int((checks["status"] == "Down").sum())
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Healthy services", healthy)
+        c2.metric("Needs attention", degraded)
+        c3.metric("Unavailable", down)
+        c4.metric("Recorded incidents", len(recent_errors(500)))
+        st.dataframe(
+            checks, use_container_width=True, hide_index=True,
+            column_config={
+                "name": st.column_config.TextColumn("Service"),
+                "status": st.column_config.TextColumn("Status"),
+                "detail": st.column_config.TextColumn("Details", width="large"),
+                "latency_ms": st.column_config.NumberColumn("Latency (ms)", format="%d"),
+                "action": st.column_config.TextColumn("Recommended action", width="large"),
+            },
+        )
+
+    incident_tab, event_tab, readiness_tab = st.tabs(["Incident center", "Activity log", "Commercial readiness"])
+    with incident_tab:
+        errors = recent_errors(100)
+        if not errors:
+            st.success("No application incidents have been recorded in this deployment.")
+        else:
+            incident_df = pd.DataFrame([{
+                "Incident": e.get("incident_id", ""),
+                "Workspace": e.get("workspace", ""),
+                "Type": e.get("error_type", ""),
+                "Message": e.get("message", ""),
+                "Timestamp": pd.to_datetime(e.get("timestamp", 0), unit="s", errors="coerce"),
+            } for e in errors])
+            st.dataframe(incident_df, use_container_width=True, hide_index=True)
+            selected_id = st.selectbox("Inspect incident", incident_df["Incident"].tolist())
+            selected = next(e for e in errors if e.get("incident_id") == selected_id)
+            st.code(selected.get("traceback", "No traceback recorded."), language="text")
+    with event_tab:
+        events = recent_events(100)
+        if events:
+            st.dataframe(pd.DataFrame(events), use_container_width=True, hide_index=True)
+        else:
+            st.info("Operational events will appear after health checks and research runs.")
+    with readiness_tab:
+        st.markdown("#### Enterprise readiness priorities")
+        readiness = pd.DataFrame([
+            {"Capability": "Persistent managed database", "Status": "Next", "Why it matters": "Survives redeploys and enables teams."},
+            {"Capability": "Role-based access", "Status": "Planned", "Why it matters": "Separates reviewers, buyers, admins, and clients."},
+            {"Capability": "Approval audit trail", "Status": "Foundation present", "Why it matters": "Makes purchasing decisions defensible."},
+            {"Capability": "Background job queue", "Status": "Planned", "Why it matters": "Large research runs should continue outside the browser request."},
+            {"Capability": "Automated regression suite", "Status": "Active", "Why it matters": "Prevents old workflows from breaking during upgrades."},
+        ])
+        st.dataframe(readiness, use_container_width=True, hide_index=True)
 
 
 def _workspace_css(theme: str, density: str, text_size: str = "Standard") -> str:
@@ -1266,7 +1365,7 @@ def _workspace_css(theme: str, density: str, text_size: str = "Standard") -> str
     @media(prefers-reduced-motion:reduce){{*,*::before,*::after{{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important;}}}}
     </style>'''
 
-def main() -> None:
+def _main_impl() -> None:
     st.set_page_config(page_title="Product Hunter Pro", page_icon="🔎", layout="wide")
     st.session_state.setdefault("ui_theme", "Light")
     st.session_state.setdefault("ui_density", "Compact")
@@ -1284,8 +1383,8 @@ def main() -> None:
 
     with st.sidebar:
         st.markdown("### PRODUCT HUNTER")
-        st.caption("Procurement Intelligence Platform · v26")
-        app_mode = st.radio("Workspace", ["Dashboard", "Product Search", "Knowledge Base", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
+        st.caption("Procurement Intelligence Platform · v27")
+        app_mode = st.radio("Workspace", ["Dashboard", "Product Search", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
         with st.expander("Appearance"):
             theme = st.selectbox("Theme", ["Light", "Dark"], index=0 if st.session_state["ui_theme"] == "Light" else 1)
             density = st.selectbox("Table density", ["Compact", "Comfortable"], index=0 if st.session_state["ui_density"] == "Compact" else 1)
@@ -1297,7 +1396,7 @@ def main() -> None:
                 st.session_state["ui_text_size"] = text_size
                 st.rerun()
         with st.expander("Quick navigation"):
-            quick_target = st.selectbox("Go to", ["Dashboard", "Product Search", "Knowledge Base", "Project Intelligence", "Spec Sheet Compare", "Request Quotes", "Purchase Tracker"], key="quick_nav_target")
+            quick_target = st.selectbox("Go to", ["Dashboard", "Product Search", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "Request Quotes", "Purchase Tracker"], key="quick_nav_target")
             if st.button("Open workspace", use_container_width=True, key="quick_nav_open"):
                 st.session_state["workspace_mode"] = quick_target
                 st.rerun()
@@ -1307,6 +1406,9 @@ def main() -> None:
         return
     if app_mode == "Knowledge Base":
         _render_knowledge_base_workspace()
+        return
+    if app_mode == "System Center":
+        _render_system_center(config)
         return
     if app_mode == "Request Quotes":
         _render_request_quotes()
@@ -1330,7 +1432,7 @@ def main() -> None:
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
-    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v26</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Research</span><span>Evidence</span><span>Products</span><span>Documents</span><span>Suppliers</span><span>RFQ</span><span>Export</span></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v27</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Research</span><span>Evidence</span><span>Products</span><span>Documents</span><span>Suppliers</span><span>RFQ</span><span>Export</span></div>""", unsafe_allow_html=True)
 
     command_cols = st.columns([1, 1, 1, 1, 5])
     if command_cols[0].button("New research", use_container_width=True):
@@ -1829,6 +1931,23 @@ def main() -> None:
         use_container_width=True,
         on_click="ignore",
     )
+
+
+def main() -> None:
+    try:
+        _main_impl()
+    except Exception as exc:
+        workspace = str(st.session_state.get("workspace_mode", "unknown"))
+        incident_id = record_exception(exc, workspace=workspace, context={"app_version": APP_VERSION})
+        st.error("Product Hunter encountered an unexpected problem, but your incident was recorded safely.")
+        st.markdown(f"**Incident ID:** `{incident_id}`")
+        st.caption("Open System Center to inspect the technical details and export a diagnostics package.")
+        c1, c2 = st.columns(2)
+        if c1.button("Open System Center", type="primary", use_container_width=True, key="fatal_open_system_center"):
+            st.session_state["workspace_mode"] = "System Center"
+            st.rerun()
+        if c2.button("Retry workspace", use_container_width=True, key="fatal_retry"):
+            st.rerun()
 
 
 if __name__ == "__main__":
