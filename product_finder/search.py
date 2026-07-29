@@ -682,16 +682,77 @@ def searxng_everywhere_search(
     return normalized
 
 
+
+def searxng_health_check(*, base_url: str, language: str = "en") -> tuple[bool, str]:
+    """Verify that a SearXNG instance is reachable and permits JSON output."""
+    base = clean_text(base_url).rstrip("/")
+    if not base:
+        return False, "SearXNG URL is empty."
+    try:
+        response = requests.get(
+            f"{base}/search",
+            params={"q": "test", "format": "json", "language": language or "en", "safesearch": 1},
+            headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+            timeout=(8, 20),
+        )
+    except requests.Timeout:
+        return False, "The SearXNG instance timed out."
+    except requests.RequestException:
+        return False, "The SearXNG instance could not be reached."
+    if response.status_code == 403:
+        return False, "JSON output is disabled. Add json to search.formats in SearXNG settings.yml."
+    if not response.ok:
+        return False, f"SearXNG returned HTTP {response.status_code}."
+    try:
+        data = response.json()
+    except ValueError:
+        return False, "The instance did not return JSON. Confirm format=json is enabled."
+    if not isinstance(data, dict) or "results" not in data:
+        return False, "The response is JSON but does not look like a SearXNG search response."
+    return True, "SearXNG is reachable and JSON search is enabled."
+
+
+def targeted_searxng_search(
+    *, query: str, base_url: str, language: str = "en", max_results: int = 30,
+) -> tuple[list[OmniSearchResult], list[str]]:
+    """Search SearXNG with procurement-specific query variants and merge the evidence.
+
+    The variants cover the exact product, official/manufacturer sources, technical PDFs,
+    distributors, pricing/lead-time pages, and legacy/discontinued references.
+    """
+    q = clean_text(query)
+    variants = [
+        q,
+        f'"{q}" manufacturer official product',
+        f'"{q}" (spec sheet OR submittal OR installation manual OR technical data) filetype:pdf',
+        f'"{q}" (distributor OR supplier OR price OR quote OR lead time)',
+        f'"{q}" (discontinued OR obsolete OR superseded OR replacement OR legacy)',
+    ]
+    merged: list[OmniSearchResult] = []
+    notes: list[str] = []
+    per_query = max(4, min(10, max_results // max(1, len(variants))))
+    for variant in variants:
+        try:
+            merged.extend(searxng_everywhere_search(
+                query=variant, base_url=base_url, language=language, max_results=per_query
+            ))
+        except Exception as exc:
+            notes.append(f"searxng: query failed ({variant}): {exc}")
+    # Re-attach the user's original query so grouped ranking/export remains clean.
+    for item in merged:
+        item.query = q
+    return rank_omni_results(merged)[:max_results], notes
+
 def modular_everywhere_search(
     *, query: str, searxng_url: str = "", brave_api_key: str = "", serpapi_api_key: str = "",
-    provider_order: str = "searxng,brave,serpapi", country_code: str = "us", language: str = "en",
+    provider_order: str = "searxng,serpapi", country_code: str = "us", language: str = "en",
     max_results: int = 20,
 ) -> tuple[list[OmniSearchResult], list[str]]:
     """Run enabled providers in priority order, merge, deduplicate, and report provider errors.
 
     SearXNG is the recommended primary provider because it can be self-hosted without per-query fees.
-    Brave is the reliable hosted fallback. SerpApi remains optional for compatibility and specialized
-    Google Shopping/Maps/Lens features.
+    SerpApi remains optional for Google Shopping, Maps, and Lens compatibility. Brave support is retained
+    only for backward compatibility and is not required.
     """
     providers = [p.strip().lower() for p in clean_text(provider_order).split(",") if p.strip()]
     results: list[OmniSearchResult] = []
@@ -699,7 +760,9 @@ def modular_everywhere_search(
     for provider in unique_keep_order(providers):
         try:
             if provider == "searxng" and searxng_url:
-                results.extend(searxng_everywhere_search(query=query, base_url=searxng_url, language=language, max_results=max_results))
+                provider_results, provider_notes = targeted_searxng_search(query=query, base_url=searxng_url, language=language, max_results=max_results)
+                results.extend(provider_results)
+                notes.extend(provider_notes)
             elif provider == "brave" and brave_api_key:
                 results.extend(brave_everywhere_search(query=query, api_key=brave_api_key, country_code=country_code, language=language, max_results=max_results))
             elif provider == "serpapi" and serpapi_api_key:

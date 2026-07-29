@@ -138,3 +138,7 @@ Product Search searches manufacturers, catalogs, distributors, retailers, local 
 ## v14 modular search providers
 
 OmniSearch no longer requires SerpApi. Configure a self-hosted SearXNG instance as the primary provider and optionally add Brave Search as a hosted fallback. SerpApi is retained only for optional Google Shopping, Maps, and Lens compatibility. Provider failures are isolated, and results are merged, deduplicated, classified, and evidence-ranked.
+
+
+## v15 search recommendation
+Use a private SearXNG instance as the primary provider. Brave is not required. The app includes a SearXNG connection test and targeted procurement query expansion. See `UPGRADE_TO_V15.md`.

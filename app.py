@@ -181,17 +181,19 @@ def _resolve_api_keys(config: AppConfig) -> tuple[str, str, str, str]:
         st.header("Service status")
         if searxng_url:
             st.success("Primary web search: SearXNG configured")
-        elif brave_api_key:
-            st.success("Primary web search: Brave configured")
+            if st.button("Test SearXNG connection", use_container_width=True):
+                from product_finder.search import searxng_health_check
+                ok, message = searxng_health_check(base_url=searxng_url, language=config.language)
+                (st.success if ok else st.error)(message)
         elif serpapi_api_key:
             st.success("Web search: SerpApi compatibility mode")
         else:
-            st.warning("Web search provider missing. Configure SEARXNG_URL or BRAVE_SEARCH_API_KEY.")
+            st.warning("Web search provider missing. Configure SEARXNG_URL.")
 
         if serpapi_api_key:
             st.info("Google Shopping, Maps, and Lens compatibility: ready")
         else:
-            st.caption("Google Shopping, Maps, and Lens are disabled without SerpApi; OmniSearch still works with SearXNG/Brave.")
+            st.caption("Google Shopping, Maps, and Lens are disabled without SerpApi; OmniSearch still works with SearXNG.")
 
         if config.openai_api_key and not server_keys_allowed:
             st.warning("Hosted image-recognition key is disabled by the access policy.")
@@ -203,7 +205,7 @@ def _resolve_api_keys(config: AppConfig) -> tuple[str, str, str, str]:
         if config.allow_user_api_keys:
             with st.expander("Use different API settings"):
                 user_searxng_url = st.text_input("SearXNG URL", value="", help="Example: https://search.example.com")
-                user_brave_key = st.text_input("Brave Search API key", type="password")
+                user_brave_key = ""  # Brave is optional and no longer shown in the normal setup.
                 user_serpapi_key = st.text_input("SerpApi key (optional compatibility)", type="password")
                 user_openai_key = st.text_input("OpenAI API key", type="password")
                 if user_searxng_url.strip(): searxng_url = user_searxng_url.strip().rstrip("/")
