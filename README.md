@@ -146,3 +146,7 @@ OmniSearch no longer requires SerpApi. Configure a self-hosted SearXNG instance 
 
 ## v15 search recommendation
 Use a private SearXNG instance as the primary provider. Brave is not required. The app includes a SearXNG connection test and targeted procurement query expansion. See `UPGRADE_TO_V15.md`.
+
+## v19 professional workspace
+
+Version 19 adds a professional tabbed research workspace and routes normalized SearXNG results into focused offer, document, manufacturer, and supplier views.

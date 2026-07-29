@@ -144,6 +144,76 @@ def _dedupe_stores(results: list[StoreResult]) -> list[StoreResult]:
     return output
 
 
+
+
+def _route_omni_results(results: list[OmniSearchResult]) -> tuple[list[ProductResult], list[StoreResult], list[SpecDocument], list[ManufacturerResult]]:
+    """Route normalized SearXNG/OmniSearch records into the dedicated app views.
+
+    OmniSearch remains the source of truth. These derived records let users work with
+    retailer, supplier, document, and manufacturer-focused tables without requiring
+    SerpApi-specific result objects.
+    """
+    products: list[ProductResult] = []
+    stores: list[StoreResult] = []
+    documents: list[SpecDocument] = []
+    manufacturers: list[ManufacturerResult] = []
+    for item in results:
+        source_type = (item.source_type or "").casefold()
+        result_kind = (item.result_kind or "").casefold()
+        is_document = item.document_pdf or "document" in source_type or "pdf" in result_kind or any(
+            token in result_kind for token in ("manual", "spec", "submittal", "warranty", "cad", "bim", "revit")
+        )
+        is_manufacturer = item.official_source or "official manufacturer" in source_type
+        is_retail = any(token in source_type for token in ("retailer", "marketplace", "distributor"))
+        is_local = "local supplier" in source_type or "nearby" in result_kind
+
+        if is_retail:
+            products.append(ProductResult(
+                query=item.query, input_source="OmniSearch", rank=item.rank, title=item.title,
+                seller=item.source_name or item.source_domain, price=item.price,
+                extracted_price=item.extracted_price, delivery=item.delivery, snippet=item.snippet,
+                product_link=item.link, raw_source=item.raw_source, match_score=item.overall_score,
+                match_grade=item.verification_status, match_confidence="Evidence-backed web result",
+                match_profile="OmniSearch", score_breakdown=item.evidence,
+                best_match=False, exact_model_match=item.exact_model_mentioned,
+                recommendation="Verify price, stock, shipping, and exact configuration on the source page.",
+            ))
+        if is_local:
+            stores.append(StoreResult(
+                query=item.query, rank=item.rank, title=item.source_name or item.title,
+                store_type="Local supplier lead", address=item.location, website=item.link,
+                maps_link=item.link, raw_source=item.raw_source,
+            ))
+        if is_document:
+            doc_type = "Technical document"
+            text = f"{item.title} {item.result_kind}".casefold()
+            for label, tokens in (("Spec sheet", ("spec", "datasheet")), ("Submittal", ("submittal",)),
+                                  ("Installation manual", ("installation", "install manual")),
+                                  ("Warranty", ("warranty",)), ("CAD / BIM", ("cad", "bim", "revit", "dwg")),
+                                  ("Parts / service", ("parts", "service manual"))):
+                if any(token in text for token in tokens):
+                    doc_type = label
+                    break
+            documents.append(SpecDocument(
+                query=item.query, rank=item.rank, title=item.title, document_type=doc_type,
+                source_domain=item.source_domain, link=item.link, displayed_link=item.link,
+                snippet=item.snippet, official_source=item.official_source,
+                pdf_link=item.document_pdf,
+                match_confidence="Exact" if item.exact_model_mentioned else "Likely" if item.overall_score >= 70 else "Possible",
+                raw_source=item.raw_source,
+            ))
+        if is_manufacturer:
+            manufacturers.append(ManufacturerResult(
+                query=item.query, rank=item.rank, title=item.title,
+                manufacturer=item.source_name, source_domain=item.source_domain,
+                page_type=item.result_kind, link=item.link, snippet=item.snippet,
+                official_source=True, exact_model_mentioned=item.exact_model_mentioned,
+                source_confidence="Verified exact source" if item.exact_model_mentioned else "Likely official source",
+                raw_source=item.raw_source,
+            ))
+    return products, stores, documents, manufacturers
+
+
 def _password_gate(config: AppConfig) -> bool:
     if not config.app_password:
         return True
@@ -233,9 +303,9 @@ def _show_input_records(records: list[InputRecord]) -> None:
 
 
 def _show_product_results(results: list[ProductResult]) -> None:
-    st.subheader("Online and shipping listings")
+    st.subheader("Retailer and distributor offers")
     if not results:
-        st.info("No product listings were returned, or online search was disabled.")
+        st.info("No retailer or distributor pages were returned.")
         return
     dataframe = _records_to_df(results)
     columns = [
@@ -273,9 +343,9 @@ def _show_product_results(results: list[ProductResult]) -> None:
 
 
 def _show_store_results(results: list[StoreResult]) -> None:
-    st.subheader("Nearby retailer leads")
+    st.subheader("Local supplier leads")
     if not results:
-        st.info("No nearby stores were returned, or nearby search was disabled.")
+        st.info("No local supplier leads were returned. General web search cannot guarantee nearby inventory.")
         return
     dataframe = _records_to_df(results)
     columns = [
@@ -307,7 +377,7 @@ def _show_store_results(results: list[StoreResult]) -> None:
 
 
 def _show_spec_documents(results: list[SpecDocument]) -> None:
-    st.subheader("Technical documents")
+    st.subheader("Technical documentation")
     if not results:
         st.info("No spec sheets or technical documents were returned, or document search was disabled.")
         return
@@ -327,7 +397,7 @@ def _show_spec_documents(results: list[SpecDocument]) -> None:
 
 
 def _show_manufacturer_results(results: list[ManufacturerResult]) -> None:
-    st.subheader("Official manufacturer sources")
+    st.subheader("Official manufacturer evidence")
     if not results:
         st.info("No likely manufacturer pages were returned, or manufacturer search was disabled.")
         return
@@ -345,7 +415,7 @@ def _show_manufacturer_results(results: list[ManufacturerResult]) -> None:
     )
 
 def _show_omni_results(results: list[OmniSearchResult]) -> None:
-    st.subheader("OmniSearch — all sources")
+    st.subheader("Research results")
     if not results:
         st.info("No unified results were returned.")
         return
@@ -871,15 +941,29 @@ def _render_request_quotes() -> None:
 def main() -> None:
     st.set_page_config(page_title="Product Hunter Pro", page_icon="🔎", layout="wide")
     st.markdown("""<style>
-    .stApp {background: linear-gradient(180deg,#f4f8fc 0%,#ffffff 45%);}
-    .block-container {max-width: 1380px; padding-top: 2rem;}
-    h1,h2,h3 {color:#17324d;}
-    .section-card{background:white;border:1px solid #dbe7f2;border-radius:16px;padding:1rem 1.1rem;margin:.75rem 0;box-shadow:0 6px 18px rgba(23,50,77,.05)}
-    [data-testid="stSidebar"] {background:#edf4fb; border-right:1px solid #d7e4f0;}
-    .hero {padding:1.4rem 1.6rem;border-radius:18px;background:linear-gradient(120deg,#17324d,#2e75b6);color:white;margin-bottom:1.25rem;box-shadow:0 10px 28px rgba(23,50,77,.16)}
-    .hero h1{color:white;margin:0;font-size:2.25rem}.hero p{margin:.5rem 0 0;color:#eaf3fb;font-size:1.05rem}
-    div[data-testid="stMetric"] {background:white;border:1px solid #dbe7f2;padding:1rem;border-radius:14px;box-shadow:0 5px 16px rgba(23,50,77,.06)}
-    div.stButton > button, div.stDownloadButton > button {border-radius:10px;font-weight:700;}
+    :root{--ph-bg:#f4f5f7;--ph-surface:#ffffff;--ph-border:#d9dde5;--ph-text:#202124;--ph-muted:#5f6368;--ph-accent:#2563eb;--ph-accent2:#0f6cbd;--ph-nav:#1f2937;}
+    .stApp{background:var(--ph-bg);color:var(--ph-text);}
+    .block-container{max-width:1500px;padding-top:1.15rem;padding-bottom:3rem;}
+    h1,h2,h3{color:var(--ph-text);font-family:Segoe UI,Inter,Arial,sans-serif;letter-spacing:-.02em;}
+    h2{font-size:1.45rem;margin-top:1.1rem;}
+    [data-testid="stSidebar"]{background:var(--ph-nav);border-right:1px solid #111827;}
+    [data-testid="stSidebar"] *{color:#eef2f7;}
+    [data-testid="stSidebar"] input,[data-testid="stSidebar"] textarea,[data-testid="stSidebar"] [data-baseweb="select"] *{color:#111827;}
+    [data-testid="stSidebar"] hr{border-color:#3b4657;}
+    .hero{padding:1.4rem 1.55rem;border-radius:10px;background:linear-gradient(105deg,#0f172a 0%,#173b68 58%,#0f6cbd 100%);color:white;margin:.15rem 0 1rem;box-shadow:0 4px 14px rgba(15,23,42,.18);}
+    .hero h1{color:white;margin:0;font-size:2rem;font-weight:650}.hero p{margin:.42rem 0 0;color:#dbeafe;font-size:1rem;max-width:980px}.hero .eyebrow{text-transform:uppercase;letter-spacing:.12em;font-size:.72rem;color:#93c5fd;font-weight:700;margin-bottom:.35rem;}
+    .commandbar{display:flex;align-items:center;gap:.55rem;background:white;border:1px solid var(--ph-border);border-radius:8px;padding:.55rem .75rem;margin-bottom:1rem;box-shadow:0 1px 2px rgba(15,23,42,.04);font-size:.84rem;color:var(--ph-muted)}
+    .commandbar .pill{background:#eef4ff;color:#174ea6;border:1px solid #c7d7fe;border-radius:999px;padding:.25rem .55rem;font-weight:600;}
+    .section-card{background:white;border:1px solid var(--ph-border);border-radius:8px;padding:1rem 1.1rem;margin:.75rem 0;box-shadow:0 1px 3px rgba(15,23,42,.05)}
+    div[data-testid="stMetric"]{background:white;border:1px solid var(--ph-border);padding:.9rem 1rem;border-radius:8px;box-shadow:0 1px 3px rgba(15,23,42,.05)}
+    div[data-testid="stMetricLabel"]{font-size:.78rem;color:var(--ph-muted);text-transform:uppercase;letter-spacing:.04em;}
+    div[data-testid="stMetricValue"]{font-size:1.65rem;font-weight:650;}
+    div.stButton>button,div.stDownloadButton>button{border-radius:6px;font-weight:600;min-height:2.35rem;}
+    div.stButton>button[kind="primary"],div.stDownloadButton>button[kind="primary"]{background:var(--ph-accent2);border-color:var(--ph-accent2);}
+    [data-testid="stDataFrame"]{background:white;border:1px solid var(--ph-border);border-radius:7px;overflow:hidden;}
+    [data-baseweb="tab-list"]{gap:.15rem;border-bottom:1px solid var(--ph-border);}
+    [data-baseweb="tab"]{border-radius:5px 5px 0 0;padding:.55rem .9rem;font-weight:600;}
+    .stAlert{border-radius:7px;}
     </style>""", unsafe_allow_html=True)
     config = load_config(_secret_getter)
 
@@ -911,7 +995,7 @@ def main() -> None:
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
-    st.markdown("""<div class="hero"><h1>Product Hunter Pro</h1><p>AI procurement research that discovers unknown manufacturers, searches official domains, technical documents, distributors, retailers, lead-time sources, and legacy products in one run.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace</div><h1>Product Hunter Pro</h1><p>Research products across manufacturers, distributors, technical documents, legacy sources, and purchasing channels—then export a review-ready procurement workbook.</p></div><div class="commandbar"><span class="pill">Research Everywhere</span><span>Evidence-ranked sources</span><span>•</span><span>Spec verification</span><span>•</span><span>Excel & RFQ workflows</span></div>""", unsafe_allow_html=True)
 
     serpapi_api_key, openai_api_key, brave_api_key, searxng_url = _resolve_api_keys(config)
 
@@ -1205,7 +1289,12 @@ def main() -> None:
     product_results = rank_product_matches(_dedupe_products(product_results))
     store_results = _dedupe_stores(store_results)
     omni_results = rank_omni_results(omni_results + omni_from_existing(products=product_results, specs=spec_documents, manufacturers=manufacturer_results, stores=store_results))
-    progress.progress(1.0, text="Search complete.")
+    routed_products, routed_stores, routed_specs, routed_manufacturers = _route_omni_results(omni_results)
+    product_results = rank_product_matches(_dedupe_products(product_results + routed_products))
+    store_results = _dedupe_stores(store_results + routed_stores)
+    spec_documents = list({(d.link or d.title): d for d in (spec_documents + routed_specs)}.values())
+    manufacturer_results = list({(m.link or m.title): m for m in (manufacturer_results + routed_manufacturers)}.values())
+    progress.progress(1.0, text="Research complete.")
 
     filename, workbook_bytes = create_product_workbook_bytes(
         input_records=input_records,
@@ -1246,11 +1335,30 @@ def main() -> None:
             "q + format=json request that works in your browser and shows provider diagnostics here."
         )
 
-    _show_omni_results(omni_results)
-    _show_product_results(product_results)
-    _show_store_results(store_results)
-    _show_spec_documents(spec_documents)
-    _show_manufacturer_results(manufacturer_results)
+    overview_tab, offers_tab, documents_tab, suppliers_tab, diagnostics_tab = st.tabs([
+        "Research overview", "Offers", "Documents & manufacturer", "Suppliers", "Diagnostics"
+    ])
+    with overview_tab:
+        _show_omni_results(omni_results)
+    with offers_tab:
+        _show_product_results(product_results)
+    with documents_tab:
+        doc_col, mfg_col = st.columns(2)
+        with doc_col:
+            _show_spec_documents(spec_documents)
+        with mfg_col:
+            _show_manufacturer_results(manufacturer_results)
+    with suppliers_tab:
+        _show_store_results(store_results)
+    with diagnostics_tab:
+        st.markdown("#### Research health")
+        st.write(f"Normalized sources: **{len(omni_results)}**")
+        st.write(f"Routed offers: **{len(product_results)}** · documents: **{len(spec_documents)}** · manufacturer sources: **{len(manufacturer_results)}**")
+        if run_notes:
+            for note in unique_keep_order(run_notes):
+                st.write(f"- {note}")
+        else:
+            st.success("No provider warnings were recorded for this run.")
 
     st.download_button(
         f"Download {filename}",
