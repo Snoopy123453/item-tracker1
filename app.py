@@ -1003,7 +1003,7 @@ def _render_request_quotes() -> None:
 
 
 def _render_quote_center() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Commercial Procurement Workspace · v31</div><h1>RFQ & Quote Center</h1><p>Create vendor-ready RFQs, import competing quotes, compare landed cost and lead time, flag substitutions, and generate a professional bid tab from one workspace.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Commercial Procurement Workspace · v31.1</div><h1>RFQ & Quote Center</h1><p>Create vendor-ready RFQs, import competing quotes, compare landed cost and lead time, flag substitutions, and generate a professional bid tab from one workspace.</p></div>""", unsafe_allow_html=True)
     st.markdown("""<div class="enterprise-ribbon"><div class="group"><span class="cmd active">RFQ Home</span><span class="cmd">Create RFQ</span><span class="cmd">Import Quotes</span></div><div class="group"><span class="cmd">Compare</span><span class="cmd">Award Review</span><span class="cmd">Bid Tab</span></div><div class="group"><span class="cmd">Export</span><span class="cmd">Audit</span></div></div>""", unsafe_allow_html=True)
     create_tab, compare_tab, award_tab = st.tabs(["Create RFQ", "Quote Comparison", "Award Recommendation"])
     with create_tab:
@@ -1068,7 +1068,7 @@ def _format_epoch(value: object) -> str:
 
 
 def _render_dashboard_workspace() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v31</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v31.1</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
     kb = ProductKnowledgeBase()
     stats = kb.stats()
     run_stats = kb.research_run_stats()
@@ -1544,9 +1544,9 @@ def _workspace_css(theme: str, density: str, text_size: str = "Standard") -> str
     .resource-card *{{color:var(--ph-text)!important;}}.resource-card strong{{color:var(--ph-text-strong)!important;}}
     .contrast-note{{display:inline-flex;align-items:center;gap:.35rem;padding:.22rem .5rem;border-radius:999px;background:var(--ph-success-bg);color:var(--ph-success)!important;border:1px solid color-mix(in srgb,var(--ph-success) 35%,transparent);font-size:.74rem;font-weight:700;}}
 
-    .enterprise-ribbon{display:flex;gap:.25rem;align-items:center;padding:.35rem .45rem;background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:6px;margin-bottom:.65rem;overflow-x:auto;box-shadow:var(--ph-shadow);}
-    .enterprise-ribbon .group{display:flex;gap:.18rem;padding-right:.45rem;margin-right:.25rem;border-right:1px solid var(--ph-border);}
-    .enterprise-ribbon .group:last-child{border-right:0}.enterprise-ribbon .cmd{padding:.42rem .62rem;border-radius:4px;color:var(--ph-text)!important;font-size:.78rem;font-weight:650;white-space:nowrap}.enterprise-ribbon .cmd.active{background:var(--ph-selected);color:var(--ph-link)!important}.award-card{padding:1rem;border:1px solid var(--ph-border);border-left:4px solid var(--ph-success);background:var(--ph-success-bg);border-radius:6px}.award-card *{color:var(--ph-text)!important}.award-card strong{color:var(--ph-text-strong)!important}
+    .enterprise-ribbon{{display:flex;gap:.25rem;align-items:center;padding:.35rem .45rem;background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:6px;margin-bottom:.65rem;overflow-x:auto;box-shadow:var(--ph-shadow);}}
+    .enterprise-ribbon .group{{display:flex;gap:.18rem;padding-right:.45rem;margin-right:.25rem;border-right:1px solid var(--ph-border);}}
+    .enterprise-ribbon .group:last-child{{border-right:0}}.enterprise-ribbon .cmd{{padding:.42rem .62rem;border-radius:4px;color:var(--ph-text)!important;font-size:.78rem;font-weight:650;white-space:nowrap}}.enterprise-ribbon .cmd.active{{background:var(--ph-selected);color:var(--ph-link)!important}}.award-card{{padding:1rem;border:1px solid var(--ph-border);border-left:4px solid var(--ph-success);background:var(--ph-success-bg);border-radius:6px}}.award-card *{{color:var(--ph-text)!important}}.award-card strong{{color:var(--ph-text-strong)!important}}
     @media(max-width:900px){{.block-container{{padding:.65rem .7rem 3rem}}.hero{{padding:1rem}}.hero h1{{font-size:1.55rem}}.app-shell .meta{{display:none}}.commandbar{{font-size:.78rem}}}}
     @media(prefers-reduced-motion:reduce){{*,*::before,*::after{{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important;}}}}
     </style>'''
@@ -1569,7 +1569,7 @@ def _main_impl() -> None:
 
     with st.sidebar:
         st.markdown("### PRODUCT HUNTER")
-        st.caption("Procurement Intelligence Platform · v31")
+        st.caption("Procurement Intelligence Platform · v31.1")
         app_mode = st.radio("Workspace", ["Dashboard", "Product Search", "Product Workspace", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "RFQ & Quote Center", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
         with st.expander("Appearance"):
             theme = st.selectbox("Theme", ["Light", "Dark"], index=0 if st.session_state["ui_theme"] == "Light" else 1)
@@ -1624,7 +1624,7 @@ def _main_impl() -> None:
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
-    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v31</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Home</span><span>Research</span><span>Products</span><span>Documents</span><span>Vendors</span><span>RFQ & Quotes</span><span>Reports</span><span>Settings</span></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v31.1</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Home</span><span>Research</span><span>Products</span><span>Documents</span><span>Vendors</span><span>RFQ & Quotes</span><span>Reports</span><span>Settings</span></div>""", unsafe_allow_html=True)
 
     command_cols = st.columns([1, 1, 1, 1, 5])
     if command_cols[0].button("New research", use_container_width=True):
