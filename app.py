@@ -180,7 +180,7 @@ def _resolve_api_keys(config: AppConfig) -> tuple[str, str, str, str]:
     with st.sidebar:
         st.header("Service status")
         if searxng_url:
-            st.success("Primary web search: SearXNG configured")
+            st.success("Dynamic discovery search: SearXNG configured")
             if st.button("Test SearXNG connection", use_container_width=True):
                 from product_finder.search import searxng_health_check
                 ok, message = searxng_health_check(base_url=searxng_url, language=config.language)
@@ -193,7 +193,7 @@ def _resolve_api_keys(config: AppConfig) -> tuple[str, str, str, str]:
         if serpapi_api_key:
             st.info("Google Shopping, Maps, and Lens compatibility: ready")
         else:
-            st.caption("Google Shopping, Maps, and Lens are disabled without SerpApi; OmniSearch still works with SearXNG.")
+            st.caption("Google Shopping, Maps, and Lens are disabled without SerpApi. Dynamic manufacturer discovery and web/document search still work through SearXNG.")
 
         if config.openai_api_key and not server_keys_allowed:
             st.warning("Hosted image-recognition key is disabled by the access policy.")
@@ -911,7 +911,7 @@ def main() -> None:
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
-    st.markdown("""<div class="hero"><h1>Product Hunter Pro</h1><p>One search across manufacturers, catalogs, distributors, retailers, technical documents, local suppliers, and legacy sources—merged into one evidence-ranked procurement report.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><h1>Product Hunter Pro</h1><p>One search discovers unknown manufacturers, verifies likely official domains, and searches catalogs, distributors, retailers, technical documents, local suppliers, and legacy sources.</p></div>""", unsafe_allow_html=True)
 
     serpapi_api_key, openai_api_key, brave_api_key, searxng_url = _resolve_api_keys(config)
 

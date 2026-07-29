@@ -743,6 +743,133 @@ def targeted_searxng_search(
         item.query = q
     return rank_omni_results(merged)[:max_results], notes
 
+
+
+# --- Dynamic manufacturer discovery v16 ------------------------------------
+_GENERIC_SEARCH_DOMAINS = {
+    *_MARKETPLACE_DOMAINS, *_DISTRIBUTOR_DOMAINS,
+    "google.com", "bing.com", "yahoo.com", "duckduckgo.com", "youtube.com",
+    "facebook.com", "instagram.com", "linkedin.com", "pinterest.com", "reddit.com",
+    "manualslib.com", "scribd.com", "issuu.com", "pdfcoffee.com", "catalogs.com",
+}
+
+
+def _root_domain(domain: str) -> str:
+    parts = clean_text(domain).lower().removeprefix("www.").split(".")
+    if len(parts) <= 2:
+        return ".".join(parts)
+    # Good-enough public-suffix handling for common US/UK/AU domains without an extra dependency.
+    if parts[-2] in {"co", "com", "org", "net"} and len(parts[-1]) == 2:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def _brand_hint(query: str) -> str:
+    words = clean_text(query).split()
+    before_model: list[str] = []
+    for word in words:
+        if any(ch.isdigit() for ch in word):
+            break
+        if word.lower() not in {"the", "a", "an", "model", "no.", "number"}:
+            before_model.append(word)
+    return " ".join(before_model[:4]).strip()
+
+
+def discover_manufacturer_domains(*, query: str, results: list[OmniSearchResult], max_domains: int = 3) -> list[tuple[str, float, str]]:
+    """Infer likely official manufacturer domains from broad results.
+
+    This intentionally supports manufacturers never seen before. It uses repeated exact-model
+    evidence, brand/domain similarity, technical-document presence, and non-marketplace status.
+    The output is a ranked list of (domain, confidence, evidence).
+    """
+    model_tokens = _query_model_tokens(query)
+    brand = _brand_hint(query).lower().replace(" ", "")
+    grouped: dict[str, dict[str, Any]] = {}
+    for item in results:
+        domain = _root_domain(item.source_domain or urlparse(item.link).netloc)
+        if not domain or domain in _GENERIC_SEARCH_DOMAINS or any(domain.endswith("." + d) for d in _GENERIC_SEARCH_DOMAINS):
+            continue
+        row = grouped.setdefault(domain, {"score": 0.0, "count": 0, "exact": 0, "docs": 0, "reasons": []})
+        row["count"] += 1
+        hay = f"{item.title} {item.snippet} {item.link}".lower()
+        exact = bool(model_tokens and all(tok in hay for tok in model_tokens))
+        if exact:
+            row["score"] += 40
+            row["exact"] += 1
+            row["reasons"].append("exact model appears")
+        if item.document_pdf or any(term in hay for term in _DOC_TERMS):
+            row["score"] += 14
+            row["docs"] += 1
+            row["reasons"].append("technical document found")
+        compact_domain = domain.replace("-", "").replace(".", "")
+        if brand and (brand in compact_domain or compact_domain.split("com")[0] in brand):
+            row["score"] += 28
+            row["reasons"].append("brand resembles domain")
+        if any(token in hay for token in ("official", "manufacturer", "product catalog", "technical data")):
+            row["score"] += 8
+        if item.source_type in {"Official manufacturer", "Official manufacturer document"}:
+            row["score"] += 20
+        row["score"] += min(12, row["count"] * 3)
+    ranked: list[tuple[str, float, str]] = []
+    for domain, row in grouped.items():
+        # Require meaningful evidence; one unrelated organic result is not enough.
+        if row["score"] < 30 or (not row["exact"] and not brand):
+            continue
+        confidence = min(99.0, round(row["score"], 1))
+        evidence = "; ".join(unique_keep_order(row["reasons"], max_items=4))
+        ranked.append((domain, confidence, evidence or "repeated relevant results"))
+    ranked.sort(key=lambda x: (-x[1], x[0]))
+    return ranked[:max_domains]
+
+
+def adaptive_searxng_search(
+    *, query: str, base_url: str, language: str = "en", max_results: int = 30, max_domains: int = 3,
+) -> tuple[list[OmniSearchResult], list[str], list[tuple[str, float, str]]]:
+    """Discover unknown manufacturers, then deep-search their likely official domains."""
+    q = clean_text(query)
+    notes: list[str] = []
+    broad_variants = [
+        q,
+        f'"{q}" product manufacturer',
+        f'"{q}" (spec sheet OR submittal OR technical data OR installation manual) filetype:pdf',
+        f'"{q}" (supplier OR distributor OR price OR quote OR lead time)',
+        f'"{q}" (discontinued OR obsolete OR superseded OR replacement OR legacy)',
+    ]
+    broad: list[OmniSearchResult] = []
+    per_query = max(4, min(9, max_results // 4))
+    for variant in broad_variants:
+        try:
+            broad.extend(searxng_everywhere_search(query=variant, base_url=base_url, language=language, max_results=per_query))
+        except Exception as exc:
+            notes.append(f"searxng: discovery query failed ({variant}): {exc}")
+    for item in broad:
+        item.query = q
+    discovered = discover_manufacturer_domains(query=q, results=broad, max_domains=max_domains)
+
+    deep: list[OmniSearchResult] = []
+    for domain, confidence, evidence in discovered:
+        variants = [
+            f'site:{domain} "{q}"',
+            f'site:{domain} "{q}" (spec OR submittal OR manual OR technical OR catalog)',
+            f'site:{domain} "{q}" filetype:pdf',
+        ]
+        for variant in variants:
+            try:
+                found = searxng_everywhere_search(query=variant, base_url=base_url, language=language, max_results=6)
+                for item in found:
+                    item.query = q
+                    item.official_source = True
+                    item.source_type = "Discovered manufacturer document" if item.document_pdf else "Discovered manufacturer source"
+                    item.source_reliability = max(item.source_reliability, min(96.0, 72.0 + confidence * 0.22))
+                    item.overall_score = round(item.match_score * 0.62 + item.source_reliability * 0.38, 1)
+                    item.evidence = "; ".join(x for x in [item.evidence, f"Dynamic domain discovery: {evidence}"] if x)
+                    item.verification_status = "Official-domain candidate — verify" if not item.exact_model_mentioned else "Exact model on discovered manufacturer domain"
+                deep.extend(found)
+            except Exception as exc:
+                notes.append(f"searxng: manufacturer deep search failed ({domain}): {exc}")
+    merged = rank_omni_results(broad + deep)[:max_results]
+    return merged, notes, discovered
+
 def modular_everywhere_search(
     *, query: str, searxng_url: str = "", brave_api_key: str = "", serpapi_api_key: str = "",
     provider_order: str = "searxng,serpapi", country_code: str = "us", language: str = "en",
@@ -760,9 +887,14 @@ def modular_everywhere_search(
     for provider in unique_keep_order(providers):
         try:
             if provider == "searxng" and searxng_url:
-                provider_results, provider_notes = targeted_searxng_search(query=query, base_url=searxng_url, language=language, max_results=max_results)
+                provider_results, provider_notes, discovered = adaptive_searxng_search(
+                    query=query, base_url=searxng_url, language=language, max_results=max_results
+                )
                 results.extend(provider_results)
                 notes.extend(provider_notes)
+                if discovered:
+                    summary = ", ".join(f"{domain} ({confidence:.0f}%)" for domain, confidence, _ in discovered)
+                    notes.append(f"Dynamic manufacturer candidates: {summary}")
             elif provider == "brave" and brave_api_key:
                 results.extend(brave_everywhere_search(query=query, api_key=brave_api_key, country_code=country_code, language=language, max_results=max_results))
             elif provider == "serpapi" and serpapi_api_key:
