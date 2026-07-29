@@ -35,6 +35,8 @@ from product_finder.project_intelligence import (
     consolidate_items, create_project_backup, create_project_workbook,
     create_submittal_zip, extract_schedule_items, load_project_backup,
 )
+from product_finder.knowledge_base import ProductKnowledgeBase
+from product_finder.research_agent import ResearchAgent
 from product_finder.procurement_controls import (
     Requirement, append_audit, build_review_queue, classify_document,
     compare_requirements, create_procurement_control_workbook, data_health_checks,
@@ -995,7 +997,7 @@ def main() -> None:
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
-    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace</div><h1>Product Hunter Pro</h1><p>Research products across manufacturers, distributors, technical documents, legacy sources, and purchasing channels—then export a review-ready procurement workbook.</p></div><div class="commandbar"><span class="pill">Research Everywhere</span><span>Evidence-ranked sources</span><span>•</span><span>Spec verification</span><span>•</span><span>Excel & RFQ workflows</span></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v20</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">New research</span><span>Knowledge Base</span><span>•</span><span>Evidence Viewer</span><span>•</span><span>Spec verification</span><span>•</span><span>Excel & RFQ</span></div>""", unsafe_allow_html=True)
 
     serpapi_api_key, openai_api_key, brave_api_key, searxng_url = _resolve_api_keys(config)
 
@@ -1005,6 +1007,12 @@ def main() -> None:
         location = st.text_input("City, state, or ZIP", value=config.default_location)
         search_everywhere = st.checkbox("Research Everywhere", value=True, help="Runs multiple focused searches for official manufacturer pages, documents, pricing, lead times, distributors, local suppliers, and legacy products.")
         research_depth = st.selectbox("Research depth", ["Standard", "Deep"], index=0, help="Deep research runs more document, lifecycle, CAD/BIM, warranty, and manufacturer-domain searches. It may take longer.")
+        st.session_state["force_research_refresh"] = st.checkbox("Refresh live sources", value=False, help="Ignore saved research and run a fresh provider search.")
+        try:
+            kb_stats = ProductKnowledgeBase().stats()
+            st.caption(f"Knowledge Base: {kb_stats['cached_research']} cached searches · {kb_stats['verified_products']} verified products")
+        except Exception:
+            st.caption("Knowledge Base initializes on first research run.")
         with st.expander("Source controls"):
             include_online = st.checkbox("Shopping and shipping listings", value=True)
             include_nearby = st.checkbox("Nearby supplier leads", value=True)
@@ -1271,13 +1279,18 @@ def main() -> None:
 
         if include_broad_web:
             try:
-                provider_results, provider_notes = modular_everywhere_search(
-                    query=query, searxng_url=searxng_url, brave_api_key=brave_api_key,
+                kb = ProductKnowledgeBase()
+                agent = ResearchAgent(kb)
+                provider_results, provider_notes, research_meta = agent.research(
+                    query=query, location=location, depth=research_depth,
+                    searxng_url=searxng_url, brave_api_key=brave_api_key,
                     serpapi_api_key=serpapi_api_key, provider_order=config.search_provider_order,
                     country_code=country_code, language=language, max_results=max_omni_results,
-                    research_depth=research_depth.lower(),
+                    force_refresh=st.session_state.get("force_research_refresh", False),
                 )
                 omni_results.extend(provider_results)
+                if research_meta.get("cache_hit"):
+                    run_notes.append(f"Knowledge Base cache used for '{query}'.")
                 run_notes.extend(f"OmniSearch provider warning for '{query}': {note}" for note in provider_notes)
             except Exception as exc:  # noqa: BLE001
                 message = f"Broad OmniSearch failed for '{query}': {exc}"
@@ -1335,11 +1348,56 @@ def main() -> None:
             "q + format=json request that works in your browser and shows provider diagnostics here."
         )
 
-    overview_tab, offers_tab, documents_tab, suppliers_tab, diagnostics_tab = st.tabs([
-        "Research overview", "Offers", "Documents & manufacturer", "Suppliers", "Diagnostics"
+    overview_tab, evidence_tab, offers_tab, documents_tab, suppliers_tab, diagnostics_tab = st.tabs([
+        "Research overview", "Evidence viewer", "Offers", "Documents & manufacturer", "Suppliers", "Diagnostics"
     ])
     with overview_tab:
         _show_omni_results(omni_results)
+    with evidence_tab:
+        st.markdown("#### Evidence viewer")
+        st.caption("Inspect why a source ranked highly, then save a reviewed product to the local knowledge base.")
+        if omni_results:
+            selected_index = st.selectbox(
+                "Select research source",
+                options=list(range(len(omni_results))),
+                format_func=lambda i: f"{omni_results[i].overall_score:.0f}% · {omni_results[i].title[:90]}",
+                key="v20_evidence_source",
+            )
+            selected = omni_results[selected_index]
+            left_e, right_e = st.columns([2, 1])
+            with left_e:
+                st.markdown(f"### {selected.title}")
+                st.write(selected.snippet or "No source excerpt was returned.")
+                st.markdown(f"**Source:** {selected.source_domain or selected.source_name or 'Unknown'}")
+                st.markdown(f"**Type:** {selected.source_type} · **Result kind:** {selected.result_kind}")
+                if selected.link:
+                    st.link_button("Open source", selected.link)
+            with right_e:
+                st.metric("Evidence score", f"{selected.overall_score:.0f}%")
+                st.metric("Source reliability", f"{selected.source_reliability:.0f}%")
+                st.metric("Product match", f"{selected.match_score:.0f}%")
+                st.write(f"**Verification:** {selected.verification_status or 'Needs review'}")
+                st.write(f"**Exact model mentioned:** {'Yes' if selected.exact_model_mentioned else 'No'}")
+                st.write(f"**Official source:** {'Yes' if selected.official_source else 'No'}")
+            st.info(selected.evidence or "No detailed evidence explanation was generated for this source.")
+            with st.expander("Save review decision", expanded=False):
+                c1, c2 = st.columns(2)
+                manufacturer = c1.text_input("Manufacturer", value=selected.source_name if selected.official_source else "", key="v20_verified_manufacturer")
+                model = c2.text_input("Model / MPN", value=selected.query, key="v20_verified_model")
+                status_choice = st.selectbox("Review status", ["Verified exact", "Approved equivalent", "Needs review", "Rejected"], key="v20_verified_status")
+                reviewer_notes = st.text_area("Reviewer notes", key="v20_verified_notes")
+                if st.button("Save to Product Intelligence Database", type="primary", key="v20_save_verified"):
+                    ProductKnowledgeBase().upsert_verified_product(
+                        manufacturer=manufacturer,
+                        model=model,
+                        title=selected.title,
+                        status=status_choice,
+                        notes=reviewer_notes,
+                        evidence=[selected.to_row()],
+                    )
+                    st.success("Review decision saved to the Product Intelligence Database.")
+        else:
+            st.info("Run product research to inspect source evidence.")
     with offers_tab:
         _show_product_results(product_results)
     with documents_tab:
