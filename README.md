@@ -1,4 +1,4 @@
-# Product Hunter Pro v28
+# Product Hunter Pro v30
 
 Search reliability, provider resilience, evidence-backed procurement research, and professional exports.
 

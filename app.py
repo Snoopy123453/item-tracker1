@@ -51,7 +51,7 @@ from product_finder.procurement_controls import (
 
 
 APP_TITLE = "Product Hunter Pro"
-APP_VERSION = "28.0"
+APP_VERSION = "29.0"
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -1009,7 +1009,7 @@ def _format_epoch(value: object) -> str:
 
 
 def _render_dashboard_workspace() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v28</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v30</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
     kb = ProductKnowledgeBase()
     stats = kb.stats()
     run_stats = kb.research_run_stats()
@@ -1134,8 +1134,132 @@ def _render_knowledge_base_workspace() -> None:
         st.info("The SQLite knowledge base is suitable for one Streamlit deployment. A shared PostgreSQL or Supabase database is recommended before multi-user production use.")
 
 
+def _render_product_workspace() -> None:
+    st.markdown("## Product Workspace")
+    st.caption("Manage a reviewed product's evidence, lifecycle, notes, and approval status in one place.")
+    kb = ProductKnowledgeBase()
+    products = kb.list_verified_products(limit=1000)
+    if not products:
+        st.info("No reviewed products are available yet. Run research, open Evidence, and save a review decision first.")
+        if st.button("Open Product Search", type="primary", key="product_workspace_open_search"):
+            st.session_state["workspace_mode"] = "Product Search"
+            st.rerun()
+        return
+
+    keys = [item["product_key"] for item in products]
+    requested_key = st.session_state.get("selected_product_key", "")
+    default_index = keys.index(requested_key) if requested_key in keys else 0
+    selected_key = st.selectbox(
+        "Product record", keys, index=default_index,
+        format_func=lambda key: next(f"{item.get('manufacturer') or 'Unknown manufacturer'} · {item.get('model') or item.get('title') or key[:8]}" for item in products if item["product_key"] == key),
+        key="product_workspace_selector",
+    )
+    st.session_state["selected_product_key"] = selected_key
+    product = kb.get_verified_product(selected_key)
+    if not product:
+        st.error("The selected product record could not be loaded.")
+        return
+
+    left, right = st.columns([3, 1])
+    with left:
+        st.markdown(f"### {product.get('title') or 'Untitled product'}")
+        st.caption(f"{product.get('manufacturer') or 'Unknown manufacturer'} · {product.get('model') or 'Model not recorded'}")
+    with right:
+        st.metric("Status", product.get("status") or "Needs review")
+
+    overview_tab, evidence_tab, timeline_tab, notes_tab, actions_tab = st.tabs(["Overview", "Evidence", "Timeline", "Notes", "Actions"])
+    with overview_tab:
+        a, b, c, d = st.columns(4)
+        a.metric("Evidence", len(product.get("evidence") or []))
+        b.metric("Timeline", len(kb.list_product_events(selected_key)))
+        c.metric("Notes", len(kb.list_product_notes(selected_key)))
+        d.metric("Updated", time.strftime("%Y-%m-%d", time.localtime(float(product.get("updated_at") or 0))))
+        st.dataframe(pd.DataFrame([{
+            "Manufacturer": product.get("manufacturer", ""), "Model / MPN": product.get("model", ""),
+            "Product": product.get("title", ""), "Status": product.get("status", ""),
+            "Reviewer summary": product.get("notes", ""),
+        }]), use_container_width=True, hide_index=True)
+    with evidence_tab:
+        evidence = product.get("evidence") or []
+        if not evidence:
+            st.info("No evidence is attached to this product.")
+        else:
+            rows = [{
+                "Title": item.get("title", ""), "Overall": item.get("overall_score", 0),
+                "Trust": item.get("source_reliability", 0), "Match": item.get("match_score", 0),
+                "Source type": item.get("source_type", ""), "Official": bool(item.get("official_source", False)),
+                "Exact model": bool(item.get("exact_model_mentioned", False)), "Link": item.get("link", ""),
+                "Evidence": item.get("evidence", ""),
+            } for item in evidence]
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, column_config={
+                "Overall": st.column_config.ProgressColumn("Overall", min_value=0, max_value=100),
+                "Trust": st.column_config.ProgressColumn("Trust", min_value=0, max_value=100),
+                "Match": st.column_config.ProgressColumn("Match", min_value=0, max_value=100),
+                "Official": st.column_config.CheckboxColumn("Official"),
+                "Exact model": st.column_config.CheckboxColumn("Exact model"),
+                "Link": st.column_config.LinkColumn("Source", display_text="Open"),
+            })
+    with timeline_tab:
+        stages = ["Specified", "Researched", "Reviewed", "Approved", "Quoted", "Ordered", "Received", "Installed", "Warranty"]
+        events = kb.list_product_events(selected_key)
+        completed = {str(event.get("stage", "")) for event in events}
+        stage_cols = st.columns(len(stages))
+        for idx, stage_name in enumerate(stages):
+            stage_cols[idx].markdown(f"**{'✓ ' if stage_name in completed else ''}{stage_name}**")
+        if events:
+            event_df = pd.DataFrame(events)
+            event_df["created_at"] = event_df["created_at"].map(lambda value: time.strftime("%Y-%m-%d %H:%M", time.localtime(float(value))))
+            st.dataframe(event_df[["created_at", "stage", "detail", "actor"]], use_container_width=True, hide_index=True)
+        else:
+            st.info("No lifecycle events have been recorded.")
+        with st.form("product_timeline_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            stage_name = c1.selectbox("Stage", stages)
+            actor = c2.text_input("Actor / reviewer")
+            detail = st.text_input("Event detail")
+            if st.form_submit_button("Add timeline event", type="primary"):
+                kb.add_product_event(selected_key, stage_name, detail, actor)
+                st.success("Timeline event added.")
+                st.rerun()
+    with notes_tab:
+        notes = kb.list_product_notes(selected_key)
+        if notes:
+            for item in notes:
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(item.get("created_at") or 0)))
+                st.markdown(f"**{item.get('author') or 'Team member'}** · {when}")
+                st.write(item.get("note", ""))
+                st.divider()
+        else:
+            st.info("No product notes have been added.")
+        with st.form("product_note_form", clear_on_submit=True):
+            author = st.text_input("Author")
+            note = st.text_area("Add note")
+            if st.form_submit_button("Save note", type="primary"):
+                try:
+                    kb.add_product_note(selected_key, note, author)
+                    st.success("Note saved.")
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
+    with actions_tab:
+        statuses = ["Verified exact", "Approved equivalent", "Needs review", "Rejected", "Quoted", "Ordered", "Received", "Installed"]
+        current = product.get("status") or "Needs review"
+        new_status = st.selectbox("Review / procurement status", statuses, index=statuses.index(current) if current in statuses else 2)
+        new_notes = st.text_area("Reviewer summary", value=product.get("notes", ""))
+        c1, c2 = st.columns(2)
+        if c1.button("Update product record", type="primary", use_container_width=True):
+            kb.update_verified_product_status(selected_key, new_status, new_notes)
+            kb.add_product_event(selected_key, new_status, "Status updated from Product Workspace")
+            st.success("Product record updated.")
+            st.rerun()
+        export_record = {"product": product, "events": kb.list_product_events(selected_key, 10000), "notes": kb.list_product_notes(selected_key, 10000)}
+        c2.download_button("Export product record", json.dumps(export_record, indent=2).encode("utf-8"),
+                           file_name=f"Product_Hunter_{(product.get('model') or 'product').replace('/', '-')}.json",
+                           mime="application/json", use_container_width=True)
+
+
 def _render_system_center(config: AppConfig) -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Enterprise Operations · v28</div><h1>System Center</h1><p>Validate service health, inspect incidents, export diagnostics, and resolve configuration problems without exposing secrets.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Enterprise Operations · v30</div><h1>System Center</h1><p>Validate service health, inspect incidents, export diagnostics, and resolve configuration problems without exposing secrets.</p></div>""", unsafe_allow_html=True)
     serpapi_api_key, openai_api_key, brave_api_key, searxng_url = _resolve_api_keys(config)
     db_path = ProductKnowledgeBase().path
 
@@ -1164,16 +1288,16 @@ def _render_system_center(config: AppConfig) -> None:
         use_container_width=True,
     )
 
-    if run_now or "v28_health_checks" not in st.session_state:
+    if run_now or "v30_health_checks" not in st.session_state:
         with st.spinner("Checking configured services..."):
-            st.session_state["v28_health_checks"] = [
+            st.session_state["v30_health_checks"] = [
                 item.to_row() for item in run_health_checks(
                     searxng_url=searxng_url, openai_api_key=openai_api_key, db_path=db_path
                 )
             ]
-        record_event("health_check", "System health checks completed", checks=len(st.session_state["v28_health_checks"]))
+        record_event("health_check", "System health checks completed", checks=len(st.session_state["v30_health_checks"]))
 
-    checks = pd.DataFrame(st.session_state.get("v28_health_checks", []))
+    checks = pd.DataFrame(st.session_state.get("v30_health_checks", []))
     if not checks.empty:
         healthy = int(checks["status"].isin(["Healthy", "Configured"]).sum())
         degraded = int(checks["status"].isin(["Degraded", "Review", "Not configured"]).sum())
@@ -1383,8 +1507,8 @@ def _main_impl() -> None:
 
     with st.sidebar:
         st.markdown("### PRODUCT HUNTER")
-        st.caption("Procurement Intelligence Platform · v28")
-        app_mode = st.radio("Workspace", ["Dashboard", "Product Search", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
+        st.caption("Procurement Intelligence Platform · v30")
+        app_mode = st.radio("Workspace", ["Dashboard", "Product Search", "Product Workspace", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
         with st.expander("Appearance"):
             theme = st.selectbox("Theme", ["Light", "Dark"], index=0 if st.session_state["ui_theme"] == "Light" else 1)
             density = st.selectbox("Table density", ["Compact", "Comfortable"], index=0 if st.session_state["ui_density"] == "Compact" else 1)
@@ -1396,13 +1520,16 @@ def _main_impl() -> None:
                 st.session_state["ui_text_size"] = text_size
                 st.rerun()
         with st.expander("Quick navigation"):
-            quick_target = st.selectbox("Go to", ["Dashboard", "Product Search", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "Request Quotes", "Purchase Tracker"], key="quick_nav_target")
+            quick_target = st.selectbox("Go to", ["Dashboard", "Product Search", "Product Workspace", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "Request Quotes", "Purchase Tracker"], key="quick_nav_target")
             if st.button("Open workspace", use_container_width=True, key="quick_nav_open"):
                 st.session_state["workspace_mode"] = quick_target
                 st.rerun()
 
     if app_mode == "Dashboard":
         _render_dashboard_workspace()
+        return
+    if app_mode == "Product Workspace":
+        _render_product_workspace()
         return
     if app_mode == "Knowledge Base":
         _render_knowledge_base_workspace()
@@ -1432,7 +1559,7 @@ def _main_impl() -> None:
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
-    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v28</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Research</span><span>Evidence</span><span>Products</span><span>Documents</span><span>Suppliers</span><span>RFQ</span><span>Export</span></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v30</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Research</span><span>Evidence</span><span>Products</span><span>Documents</span><span>Suppliers</span><span>RFQ</span><span>Export</span></div>""", unsafe_allow_html=True)
 
     command_cols = st.columns([1, 1, 1, 1, 5])
     if command_cols[0].button("New research", use_container_width=True):
@@ -1914,7 +2041,7 @@ def _main_impl() -> None:
                 status_choice = st.selectbox("Review status", ["Verified exact", "Approved equivalent", "Needs review", "Rejected"], key="v20_verified_status")
                 reviewer_notes = st.text_area("Reviewer notes", key="v20_verified_notes")
                 if st.button("Save to Product Intelligence Database", type="primary", key="v20_save_verified"):
-                    ProductKnowledgeBase().upsert_verified_product(
+                    saved_key = ProductKnowledgeBase().upsert_verified_product(
                         manufacturer=manufacturer,
                         model=model,
                         title=selected.title,
@@ -1922,7 +2049,9 @@ def _main_impl() -> None:
                         notes=reviewer_notes,
                         evidence=[selected.to_row()],
                     )
-                    st.success("Review decision saved to the Product Intelligence Database.")
+                    ProductKnowledgeBase().add_product_event(saved_key, "Reviewed", f"Evidence decision saved: {status_choice}")
+                    st.session_state["selected_product_key"] = saved_key
+                    st.success("Review decision saved. Open Product Workspace to manage its lifecycle.")
         else:
             st.info("Run product research to inspect source evidence.")
     with offers_tab:
