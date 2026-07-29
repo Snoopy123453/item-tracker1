@@ -12,6 +12,13 @@ from .utils import clean_text, unique_keep_order
 SERPAPI_ENDPOINT = "https://serpapi.com/search.json"
 USER_AGENT = "ProductHunterWebApp/1.0"
 
+SEARXNG_ENGINE_POOLS: tuple[tuple[str, ...], ...] = (
+    ("google", "bing"),
+    ("qwant", "mojeek"),
+    ("yahoo",),
+    ("brave", "duckduckgo", "startpage"),
+)
+
 
 class SearchInfrastructureUnavailable(RuntimeError):
     """Raised when SearXNG is reachable but its upstream engines are unavailable."""
@@ -57,6 +64,45 @@ def _parse_unresponsive_engines(data: dict[str, Any]) -> list[tuple[str, str]]:
             output.append((name, reason or "Unavailable"))
     return output
 
+
+
+
+def _engine_name(value: str) -> str:
+    return clean_text(value).casefold()
+
+
+def _fallback_engine_attempts(
+    *, query: str, failed_engines: list[tuple[str, str]], language: str
+) -> list[dict[str, Any]]:
+    """Build a small bounded set of engine-specific SearXNG retries.
+
+    SearXNG may suspend only one or two upstream engines while other configured
+    engines are still usable. A generic request can nevertheless return no
+    results, so retry healthy engine pools explicitly without flooding the
+    self-hosted instance.
+    """
+    failed = {_engine_name(name) for name, _ in failed_engines}
+    attempts: list[dict[str, Any]] = []
+    language_value = clean_text(language)
+    if language_value.casefold() == "en":
+        language_value = "en-US"
+    for pool in SEARXNG_ENGINE_POOLS:
+        healthy = [engine for engine in pool if _engine_name(engine) not in failed]
+        if not healthy:
+            continue
+        params: dict[str, Any] = {
+            "q": clean_text(query),
+            "format": "json",
+            "engines": ",".join(healthy),
+            "categories": "general",
+            "safesearch": 0,
+        }
+        if language_value:
+            params["language"] = language_value
+        attempts.append(params)
+        if len(attempts) >= 3:
+            break
+    return attempts
 
 def _serpapi_get(params: dict[str, Any], *, timeout: int = 60) -> dict[str, Any]:
     """Call SerpApi without ever surfacing a URL that contains the API key."""
@@ -702,11 +748,12 @@ def searxng_everywhere_search(
     *, query: str, base_url: str, language: str = "en", max_results: int = 20,
     request_timeout: int = 45, diagnostics_sink: list[SearxngDiagnostics] | None = None,
 ) -> list[OmniSearchResult]:
-    """Search SearXNG and normalize its JSON results.
+    """Search SearXNG with bounded engine-level failover.
 
-    The request begins with only ``q`` and ``format=json`` because that is the most
-    compatible SearXNG API shape. Engine outages are surfaced separately from true
-    zero-result searches so callers do not cache provider failures as valid research.
+    The first request uses the minimal API shape that works across SearXNG
+    versions. If it returns no data and reports suspended engines, Product
+    Hunter retries up to three healthy engine pools explicitly. This avoids a
+    single CAPTCHA or rate limit becoming a complete research outage.
     """
     base = clean_text(base_url).rstrip("/")
     if not base:
@@ -714,18 +761,19 @@ def searxng_everywhere_search(
 
     endpoint = f"{base}/search"
     headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
-    attempts = [{"q": clean_text(query), "format": "json"}]
-    language_value = clean_text(language)
-    if language_value:
-        if language_value.lower() == "en":
-            language_value = "en-US"
-        attempts.append({"q": clean_text(query), "format": "json", "language": language_value, "safesearch": 0})
-
+    attempts: list[dict[str, Any]] = [{"q": clean_text(query), "format": "json"}]
     combined_unresponsive: list[tuple[str, str]] = []
     last_diag = SearxngDiagnostics(query=clean_text(query))
-    for params in attempts:
+    attempt_index = 0
+
+    while attempt_index < len(attempts):
+        params = attempts[attempt_index]
+        attempt_index += 1
         try:
-            response = requests.get(endpoint, params=params, headers=headers, timeout=(10, max(10, int(request_timeout))))
+            response = requests.get(
+                endpoint, params=params, headers=headers,
+                timeout=(10, max(10, int(request_timeout))),
+            )
         except requests.Timeout as exc:
             raise SearchInfrastructureUnavailable(
                 "SearXNG timed out. The Render free service may still be waking up."
@@ -754,18 +802,38 @@ def searxng_everywhere_search(
             raw_results=len(items),
             normalized_results=len(normalized),
             unresponsive_engines=list(combined_unresponsive),
-            attempts=last_diag.attempts + 1,
+            attempts=attempt_index,
         )
         if normalized:
             if diagnostics_sink is not None:
                 diagnostics_sink.append(last_diag)
             return normalized
 
+        # After the minimal request, explicitly try configured engines that were
+        # not reported as suspended. Keep this bounded to protect the Render
+        # instance and avoid triggering further upstream rate limits.
+        if attempt_index == 1:
+            if unresponsive:
+                attempts.extend(
+                    _fallback_engine_attempts(
+                        query=query, failed_engines=combined_unresponsive, language=language
+                    )
+                )
+            else:
+                language_value = clean_text(language)
+                if language_value.casefold() == "en":
+                    language_value = "en-US"
+                if language_value:
+                    attempts.append({
+                        "q": clean_text(query), "format": "json",
+                        "language": language_value, "safesearch": 0,
+                    })
+
     if diagnostics_sink is not None:
         diagnostics_sink.append(last_diag)
     if last_diag.infrastructure_unavailable:
         raise SearchInfrastructureUnavailable(
-            "Search infrastructure unavailable. " + last_diag.summary()
+            "Search infrastructure unavailable after engine-level failover. " + last_diag.summary()
         )
     return []
 
@@ -932,14 +1000,14 @@ def build_procurement_query_variants(query: str, *, research_depth: str = "stand
     ]
     if research_depth == "deep":
         base.extend([
-            f'{quoted} (warranty OR parts diagram OR replacement parts) filetype:pdf',
+            f'{quoted} (catalog OR warranty OR parts diagram OR replacement parts) filetype:pdf',
             f'{quoted} (CAD OR BIM OR Revit OR DWG)',
             f'{quoted} authorized distributor',
-            f'{quoted} catalog filetype:pdf',
             f'{quoted} dimensions material finish connections',
             f'{quoted} site:archive.org OR site:webcache.googleusercontent.com',
         ])
-    return unique_keep_order(base)[:max(2, int(query_budget))]
+    effective_budget = max(12, int(query_budget)) if research_depth == "deep" else max(2, int(query_budget))
+    return unique_keep_order(base)[:effective_budget]
 
 
 def adaptive_searxng_search(

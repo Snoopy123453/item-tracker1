@@ -82,6 +82,25 @@ class ProductKnowledgeBase:
                     filters_json TEXT NOT NULL DEFAULT '{}',
                     updated_at REAL NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS product_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_key TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    detail TEXT NOT NULL DEFAULT '',
+                    actor TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_product_events_key ON product_events(product_key, created_at);
+
+                CREATE TABLE IF NOT EXISTS product_notes (
+                    note_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_key TEXT NOT NULL,
+                    note TEXT NOT NULL,
+                    author TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_product_notes_key ON product_notes(product_key, created_at);
                 """
             )
 
@@ -278,8 +297,67 @@ class ProductKnowledgeBase:
             output.append(item)
         return output
 
+    def get_verified_product(self, product_key: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT product_key, manufacturer, model, title, status, notes, evidence_json, updated_at FROM verified_products WHERE product_key=?",
+                (product_key,),
+            ).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        try:
+            item["evidence"] = json.loads(item.pop("evidence_json", "[]"))
+        except json.JSONDecodeError:
+            item["evidence"] = []
+        return item
+
+    def update_verified_product_status(self, product_key: str, status: str, notes: str | None = None) -> None:
+        with self._connect() as conn:
+            if notes is None:
+                conn.execute("UPDATE verified_products SET status=?, updated_at=? WHERE product_key=?", (status, time.time(), product_key))
+            else:
+                conn.execute("UPDATE verified_products SET status=?, notes=?, updated_at=? WHERE product_key=?", (status, notes, time.time(), product_key))
+
+    def add_product_event(self, product_key: str, stage: str, detail: str = "", actor: str = "") -> int:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO product_events(product_key, stage, detail, actor, created_at) VALUES(?,?,?,?,?)",
+                (product_key, stage.strip(), detail.strip(), actor.strip(), time.time()),
+            )
+            return int(cursor.lastrowid or 0)
+
+    def list_product_events(self, product_key: str, limit: int = 250) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT event_id, product_key, stage, detail, actor, created_at FROM product_events WHERE product_key=? ORDER BY created_at DESC LIMIT ?",
+                (product_key, max(1, int(limit))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_product_note(self, product_key: str, note: str, author: str = "") -> int:
+        text = note.strip()
+        if not text:
+            raise ValueError("Note is required")
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "INSERT INTO product_notes(product_key, note, author, created_at) VALUES(?,?,?,?)",
+                (product_key, text, author.strip(), time.time()),
+            )
+            return int(cursor.lastrowid or 0)
+
+    def list_product_notes(self, product_key: str, limit: int = 250) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT note_id, product_key, note, author, created_at FROM product_notes WHERE product_key=? ORDER BY created_at DESC LIMIT ?",
+                (product_key, max(1, int(limit))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def delete_verified_product(self, product_key: str) -> None:
         with self._connect() as conn:
+            conn.execute("DELETE FROM product_events WHERE product_key=?", (product_key,))
+            conn.execute("DELETE FROM product_notes WHERE product_key=?", (product_key,))
             conn.execute("DELETE FROM verified_products WHERE product_key=?", (product_key,))
 
     def clear_expired_cache(self) -> int:
@@ -299,6 +377,8 @@ class ProductKnowledgeBase:
             "verified_products": self.list_verified_products(limit=10000),
             "research_runs": self.list_research_runs(limit=10000),
             "saved_views": self.list_views(),
+            "product_events": [event for product in self.list_verified_products(limit=10000) for event in self.list_product_events(product["product_key"], limit=10000)],
+            "product_notes": [note for product in self.list_verified_products(limit=10000) for note in self.list_product_notes(product["product_key"], limit=10000)],
         }
 
     def stats(self) -> dict[str, int]:
