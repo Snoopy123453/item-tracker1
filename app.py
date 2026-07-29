@@ -42,12 +42,12 @@ from product_finder.procurement_controls import (
     Requirement, append_audit, build_review_queue, classify_document,
     compare_requirements, create_procurement_control_workbook, data_health_checks,
     group_duplicate_offers, landed_cost, normalize_vendor, package_completeness,
-    vendor_score,
+    vendor_score, normalize_offer_dataframe, OFFER_BASE_COLUMNS,
 )
 
 
 APP_TITLE = "Product Hunter Pro"
-APP_VERSION = "25.0"
+APP_VERSION = "26.0"
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -731,13 +731,23 @@ def _render_procurement_control_center() -> None:
                 append_audit(data["audit"],"Imported offers",details=f"{len(data['products'])} rows from {upload.name}")
                 st.success(f"Imported {len(data['products'])} offer rows.")
             except Exception as exc: st.error(f"Could not import: {exc}")
-        products=pd.DataFrame(data.get("products",[]))
-        base_cols=["title","manufacturer","model","seller","product_link","quantity","unit_price","shipping","tax_rate","discount","accessory_cost","match_score","exact_model_match","status","approved","lead_time_score","authorized_distributor","vendor_rating","notes"]
-        for c in base_cols:
-            if c not in products: products[c]=[] if products.empty else ""
-        edited=st.data_editor(products[base_cols],num_rows="dynamic",hide_index=True,use_container_width=True,
-            column_config={"product_link":st.column_config.LinkColumn("Product link"),"quantity":st.column_config.NumberColumn("Qty",min_value=0,step=1),"unit_price":st.column_config.NumberColumn("Unit price",format="$%.2f"),"shipping":st.column_config.NumberColumn("Shipping",format="$%.2f"),"tax_rate":st.column_config.NumberColumn("Tax rate",format="%.3f"),"discount":st.column_config.NumberColumn("Discount",format="$%.2f"),"accessory_cost":st.column_config.NumberColumn("Accessory cost",format="$%.2f"),"match_score":st.column_config.NumberColumn("Match %",min_value=0,max_value=100),"status":st.column_config.SelectboxColumn("Status",options=["Needs review","Approved","Rejected","Alternate","Selected","Ordered","Received","Installed"]),"approved":st.column_config.CheckboxColumn("Approved")},key="control_product_editor")
-        data["products"]=edited.fillna("").to_dict("records")
+        products=normalize_offer_dataframe(pd.DataFrame(data.get("products",[])))
+        edited=st.data_editor(products,num_rows="dynamic",hide_index=True,use_container_width=True,
+            column_config={
+                "product_link":st.column_config.LinkColumn("Product link"),
+                "quantity":st.column_config.NumberColumn("Qty",min_value=0,step=1),
+                "unit_price":st.column_config.NumberColumn("Unit price",format="$%.2f"),
+                "shipping":st.column_config.NumberColumn("Shipping",format="$%.2f"),
+                "tax_rate":st.column_config.NumberColumn("Tax rate",format="%.3f"),
+                "discount":st.column_config.NumberColumn("Discount",format="$%.2f"),
+                "accessory_cost":st.column_config.NumberColumn("Accessory cost",format="$%.2f"),
+                "match_score":st.column_config.NumberColumn("Match %",min_value=0,max_value=100),
+                "status":st.column_config.SelectboxColumn("Status",options=["Needs review","Approved","Rejected","Alternate","Selected","Ordered","Received","Installed"]),
+                "approved":st.column_config.CheckboxColumn("Approved"),
+                "exact_model_match":st.column_config.CheckboxColumn("Exact model"),
+                "authorized_distributor":st.column_config.CheckboxColumn("Authorized distributor"),
+            },key="control_product_editor")
+        data["products"]=normalize_offer_dataframe(edited).to_dict("records")
         enriched=[]
         for row in data["products"]:
             calc=landed_cost(float(row.get("unit_price") or 0),float(row.get("quantity") or 1),float(row.get("shipping") or 0),float(row.get("tax_rate") or 0),float(row.get("discount") or 0),float(row.get("accessory_cost") or 0))
@@ -995,7 +1005,7 @@ def _format_epoch(value: object) -> str:
 
 
 def _render_dashboard_workspace() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v25</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v26</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
     kb = ProductKnowledgeBase()
     stats = kb.stats()
     run_stats = kb.research_run_stats()
@@ -1053,7 +1063,7 @@ def _render_dashboard_workspace() -> None:
 
 
 def _render_knowledge_base_workspace() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Product Intelligence · v25</div><h1>Knowledge Base</h1><p>Review verified products, inspect cached research, export intelligence, and manage stored evidence.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Product Intelligence · v26</div><h1>Knowledge Base</h1><p>Review verified products, inspect cached research, export intelligence, and manage stored evidence.</p></div>""", unsafe_allow_html=True)
     kb = ProductKnowledgeBase()
     stats = kb.stats()
     c1, c2, c3, c4 = st.columns(4)
@@ -1274,7 +1284,7 @@ def main() -> None:
 
     with st.sidebar:
         st.markdown("### PRODUCT HUNTER")
-        st.caption("Procurement Intelligence Platform · v25")
+        st.caption("Procurement Intelligence Platform · v26")
         app_mode = st.radio("Workspace", ["Dashboard", "Product Search", "Knowledge Base", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
         with st.expander("Appearance"):
             theme = st.selectbox("Theme", ["Light", "Dark"], index=0 if st.session_state["ui_theme"] == "Light" else 1)
@@ -1320,7 +1330,7 @@ def main() -> None:
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
-    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v25</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Research</span><span>Evidence</span><span>Products</span><span>Documents</span><span>Suppliers</span><span>RFQ</span><span>Export</span></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v26</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Research</span><span>Evidence</span><span>Products</span><span>Documents</span><span>Suppliers</span><span>RFQ</span><span>Export</span></div>""", unsafe_allow_html=True)
 
     command_cols = st.columns([1, 1, 1, 1, 5])
     if command_cols[0].button("New research", use_container_width=True):

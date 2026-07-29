@@ -9,6 +9,7 @@ from typing import Any, Iterable
 from urllib.parse import urlparse
 
 import requests
+import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -21,6 +22,52 @@ VENDOR_ALIASES = {
     "grainger industrial supply": "Grainger", "w.w. grainger": "Grainger", "ferguson enterprises": "Ferguson",
     "supplyhouse.com": "SupplyHouse", "zoro.com": "Zoro", "walmart.com": "Walmart",
 }
+
+OFFER_BASE_COLUMNS = [
+    "title", "manufacturer", "model", "seller", "product_link", "quantity",
+    "unit_price", "shipping", "tax_rate", "discount", "accessory_cost",
+    "match_score", "exact_model_match", "status", "approved",
+    "lead_time_score", "authorized_distributor", "vendor_rating", "notes",
+]
+
+
+def normalize_offer_dataframe(frame: pd.DataFrame | None) -> pd.DataFrame:
+    """Return a Streamlit data-editor-safe offer table with stable dtypes.
+
+    CSV and Excel imports frequently infer numeric and boolean columns as object
+    strings. Streamlit validates ``column_config`` against pandas dtypes and
+    raises ``StreamlitAPIException`` when they disagree. This function supplies
+    missing columns and coerces every configured field to the expected dtype.
+    """
+    products = pd.DataFrame() if frame is None else frame.copy()
+    defaults: dict[str, Any] = {
+        "quantity": 1.0, "unit_price": 0.0, "shipping": 0.0, "tax_rate": 0.0,
+        "discount": 0.0, "accessory_cost": 0.0, "match_score": 0.0,
+        "lead_time_score": 0.0, "vendor_rating": 0.0,
+        "exact_model_match": False, "approved": False,
+        "authorized_distributor": False, "status": "Needs review",
+    }
+    text_cols = ["title", "manufacturer", "model", "seller", "product_link", "status", "notes"]
+    numeric_cols = ["quantity", "unit_price", "shipping", "tax_rate", "discount", "accessory_cost", "match_score", "lead_time_score", "vendor_rating"]
+    bool_cols = ["exact_model_match", "approved", "authorized_distributor"]
+
+    for col in OFFER_BASE_COLUMNS:
+        if col not in products.columns:
+            products[col] = defaults.get(col, "")
+    for col in text_cols:
+        products[col] = products[col].fillna("").astype(str)
+    for col in numeric_cols:
+        products[col] = pd.to_numeric(products[col], errors="coerce").fillna(defaults[col]).astype(float)
+
+    truthy = {"1", "true", "yes", "y", "checked", "on"}
+    for col in bool_cols:
+        products[col] = products[col].map(
+            lambda value: value if isinstance(value, bool) else str(value).strip().casefold() in truthy
+        ).astype(bool)
+    products["status"] = products["status"].replace("", "Needs review")
+    return products[OFFER_BASE_COLUMNS]
+
+
 DOC_TYPES = {
     "Specification Sheet": ("spec sheet", "specification", "technical data", "cut sheet"),
     "Submittal": ("submittal",), "Installation Manual": ("installation", "install guide", "instructions"),
