@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from typing import Any, Callable
+import time
 
 from .knowledge_base import ProductKnowledgeBase
 from .models import OmniSearchResult
@@ -30,13 +31,21 @@ class ResearchAgent:
         force_refresh: bool = False,
         progress: Callable[[str], None] | None = None,
     ) -> tuple[list[OmniSearchResult], list[str], dict[str, Any]]:
+        started = time.monotonic()
         if not force_refresh:
             cached = self.knowledge_base.get_research(query, location, depth)
             if cached:
                 rows = cached.get("results", [])
-                return [OmniSearchResult(**row) for row in rows], list(cached.get("notes", [])), {
-                    "cache_hit": True,
-                    "query": query,
+                notes = list(cached.get("notes", []))
+                restored = [OmniSearchResult(**row) for row in rows]
+                duration = time.monotonic() - started
+                run_id = self.knowledge_base.record_research_run(
+                    query=query, location=location, depth=depth, provider_order=provider_order,
+                    cache_hit=True, result_count=len(restored), warning_count=len(notes),
+                    duration_seconds=duration, status="Cache hit",
+                )
+                return restored, notes, {
+                    "cache_hit": True, "query": query, "duration_seconds": duration, "run_id": run_id,
                 }
 
         if progress:
@@ -58,4 +67,12 @@ class ResearchAgent:
             location,
             depth,
         )
-        return results, notes, {"cache_hit": False, "query": query}
+        duration = time.monotonic() - started
+        run_id = self.knowledge_base.record_research_run(
+            query=query, location=location, depth=depth, provider_order=provider_order,
+            cache_hit=False, result_count=len(results), warning_count=len(notes),
+            duration_seconds=duration, status="Completed" if results else "No results",
+        )
+        return results, notes, {
+            "cache_hit": False, "query": query, "duration_seconds": duration, "run_id": run_id,
+        }

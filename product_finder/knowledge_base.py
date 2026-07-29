@@ -61,6 +61,27 @@ class ProductKnowledgeBase:
                     evidence_json TEXT NOT NULL DEFAULT '[]',
                     updated_at REAL NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS research_runs (
+                    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    query TEXT NOT NULL,
+                    location TEXT NOT NULL DEFAULT '',
+                    depth TEXT NOT NULL DEFAULT 'Standard',
+                    provider_order TEXT NOT NULL DEFAULT '',
+                    cache_hit INTEGER NOT NULL DEFAULT 0,
+                    result_count INTEGER NOT NULL DEFAULT 0,
+                    warning_count INTEGER NOT NULL DEFAULT 0,
+                    duration_seconds REAL NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'Completed',
+                    created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_research_runs_created ON research_runs(created_at);
+
+                CREATE TABLE IF NOT EXISTS saved_views (
+                    view_name TEXT PRIMARY KEY,
+                    filters_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at REAL NOT NULL
+                );
                 """
             )
 
@@ -136,6 +157,82 @@ class ProductKnowledgeBase:
         return key
 
 
+
+    def record_research_run(
+        self,
+        *,
+        query: str,
+        location: str = "",
+        depth: str = "Standard",
+        provider_order: str = "",
+        cache_hit: bool = False,
+        result_count: int = 0,
+        warning_count: int = 0,
+        duration_seconds: float = 0.0,
+        status: str = "Completed",
+    ) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO research_runs(
+                    query, location, depth, provider_order, cache_hit, result_count,
+                    warning_count, duration_seconds, status, created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
+                (query, location, depth, provider_order, int(cache_hit), int(result_count),
+                 int(warning_count), float(duration_seconds), status, time.time()),
+            )
+            return int(cursor.lastrowid or 0)
+
+    def list_research_runs(self, limit: int = 250) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM research_runs ORDER BY created_at DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def research_run_stats(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS runs, COALESCE(SUM(result_count),0) AS results,
+                       COALESCE(SUM(warning_count),0) AS warnings,
+                       COALESCE(AVG(duration_seconds),0) AS avg_duration,
+                       COALESCE(SUM(cache_hit),0) AS cache_hits
+                FROM research_runs
+                """
+            ).fetchone()
+        return dict(row) if row else {"runs": 0, "results": 0, "warnings": 0, "avg_duration": 0, "cache_hits": 0}
+
+    def save_view(self, view_name: str, filters: dict[str, Any]) -> None:
+        name = str(view_name).strip()
+        if not name:
+            raise ValueError("View name is required")
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO saved_views(view_name, filters_json, updated_at) VALUES(?,?,?)
+                ON CONFLICT(view_name) DO UPDATE SET filters_json=excluded.filters_json, updated_at=excluded.updated_at""",
+                (name, json.dumps(_jsonable(filters)), time.time()),
+            )
+
+    def list_views(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT view_name, filters_json, updated_at FROM saved_views ORDER BY view_name").fetchall()
+        output=[]
+        for row in rows:
+            item=dict(row)
+            try:
+                item["filters"]=json.loads(item.pop("filters_json", "{}"))
+            except json.JSONDecodeError:
+                item["filters"]={}
+            output.append(item)
+        return output
+
+    def delete_view(self, view_name: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM saved_views WHERE view_name=?", (view_name,))
+
     def list_cached_research(self, limit: int = 200) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -179,10 +276,14 @@ class ProductKnowledgeBase:
             "exported_at": time.time(),
             "cached_research": self.list_cached_research(limit=10000),
             "verified_products": self.list_verified_products(limit=10000),
+            "research_runs": self.list_research_runs(limit=10000),
+            "saved_views": self.list_views(),
         }
 
     def stats(self) -> dict[str, int]:
         with self._connect() as conn:
             cached = conn.execute("SELECT COUNT(*) AS n FROM research_cache").fetchone()["n"]
             verified = conn.execute("SELECT COUNT(*) AS n FROM verified_products").fetchone()["n"]
-        return {"cached_research": int(cached), "verified_products": int(verified)}
+            runs = conn.execute("SELECT COUNT(*) AS n FROM research_runs").fetchone()["n"]
+            views = conn.execute("SELECT COUNT(*) AS n FROM saved_views").fetchone()["n"]
+        return {"cached_research": int(cached), "verified_products": int(verified), "research_runs": int(runs), "saved_views": int(views)}
