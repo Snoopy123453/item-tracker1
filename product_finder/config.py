@@ -27,6 +27,11 @@ class AppConfig:
     max_upload_mb: int
     max_inputs: int
     max_search_jobs: int
+    resource_profile: str
+    research_cache_hours: int
+    search_max_workers: int
+    search_query_budget: int
+    search_request_timeout: int
 
 
 def _as_bool(value: object, default: bool = False) -> bool:
@@ -100,4 +105,9 @@ def load_config(secret_getter: SecretGetter | None = None) -> AppConfig:
         max_upload_mb=_as_int(get("MAX_UPLOAD_MB", "10"), 10, 1, 25),
         max_inputs=_as_int(get("MAX_INPUTS", "12"), 12, 1, 30),
         max_search_jobs=_as_int(get("MAX_SEARCH_JOBS", "24"), 24, 1, 60),
+        resource_profile=(get("RESOURCE_PROFILE", "Balanced") or "Balanced").title(),
+        research_cache_hours=_as_int(get("RESEARCH_CACHE_HOURS", "72"), 72, 1, 720),
+        search_max_workers=_as_int(get("SEARCH_MAX_WORKERS", "3"), 3, 1, 8),
+        search_query_budget=_as_int(get("SEARCH_QUERY_BUDGET", "10"), 10, 2, 20),
+        search_request_timeout=_as_int(get("SEARCH_REQUEST_TIMEOUT", "45"), 45, 10, 120),
     )

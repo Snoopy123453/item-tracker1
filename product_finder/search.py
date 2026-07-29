@@ -653,7 +653,7 @@ def brave_everywhere_search(
 
 
 def searxng_everywhere_search(
-    *, query: str, base_url: str, language: str = "en", max_results: int = 20,
+    *, query: str, base_url: str, language: str = "en", max_results: int = 20, request_timeout: int = 45,
 ) -> list[OmniSearchResult]:
     """Search SearXNG and normalize its JSON results.
 
@@ -679,7 +679,7 @@ def searxng_everywhere_search(
     last_response = None
     for params in attempts:
         try:
-            response = requests.get(endpoint, params=params, headers=headers, timeout=(15, 75))
+            response = requests.get(endpoint, params=params, headers=headers, timeout=(10, max(10, int(request_timeout))))
         except requests.Timeout as exc:
             raise RuntimeError("SearXNG timed out. The Render free service may still be waking up.") from exc
         except requests.RequestException as exc:
@@ -841,7 +841,7 @@ def discover_manufacturer_domains(*, query: str, results: list[OmniSearchResult]
     return ranked[:max_domains]
 
 
-def build_procurement_query_variants(query: str, *, research_depth: str = "standard") -> list[str]:
+def build_procurement_query_variants(query: str, *, research_depth: str = "standard", query_budget: int = 10) -> list[str]:
     """Build focused searches for procurement research instead of one generic query."""
     q = clean_text(query)
     quoted = f'"{q}"'
@@ -864,22 +864,23 @@ def build_procurement_query_variants(query: str, *, research_depth: str = "stand
             f'{quoted} dimensions material finish connections',
             f'{quoted} site:archive.org OR site:webcache.googleusercontent.com',
         ])
-    return unique_keep_order(base)
+    return unique_keep_order(base)[:max(2, int(query_budget))]
 
 
 def adaptive_searxng_search(
     *, query: str, base_url: str, language: str = "en", max_results: int = 30,
-    max_domains: int = 3, research_depth: str = "standard",
+    max_domains: int = 3, research_depth: str = "standard", max_workers: int = 3,
+    query_budget: int = 10, request_timeout: int = 45,
 ) -> tuple[list[OmniSearchResult], list[str], list[tuple[str, float, str]]]:
     """Run parallel procurement research, discover manufacturers, then deep-search official domains."""
     q = clean_text(query)
     notes: list[str] = []
-    variants = build_procurement_query_variants(q, research_depth=research_depth)
+    variants = build_procurement_query_variants(q, research_depth=research_depth, query_budget=query_budget)
     broad: list[OmniSearchResult] = []
     per_query = max(3, min(8, max_results // max(1, min(len(variants), 8))))
 
     # Search variants concurrently so a deep research run does not become excessively slow.
-    workers = min(3, max(1, len(variants)))
+    workers = min(max(1, int(max_workers)), max(1, len(variants)))
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(
@@ -888,6 +889,7 @@ def adaptive_searxng_search(
                 base_url=base_url,
                 language=language,
                 max_results=per_query,
+                request_timeout=request_timeout,
             ): variant
             for variant in variants
         }
@@ -920,7 +922,7 @@ def adaptive_searxng_search(
 
     deep: list[OmniSearchResult] = []
     if deep_variants:
-        with ThreadPoolExecutor(max_workers=min(3, len(deep_variants))) as executor:
+        with ThreadPoolExecutor(max_workers=min(max(1, int(max_workers)), len(deep_variants))) as executor:
             futures = {
                 executor.submit(
                     searxng_everywhere_search,
@@ -928,6 +930,7 @@ def adaptive_searxng_search(
                     base_url=base_url,
                     language=language,
                     max_results=6,
+                    request_timeout=request_timeout,
                 ): (variant, domain, confidence, evidence)
                 for variant, domain, confidence, evidence in deep_variants
             }
@@ -956,7 +959,8 @@ def adaptive_searxng_search(
 def modular_everywhere_search(
     *, query: str, searxng_url: str = "", brave_api_key: str = "", serpapi_api_key: str = "",
     provider_order: str = "searxng,serpapi", country_code: str = "us", language: str = "en",
-    max_results: int = 20, research_depth: str = "standard",
+    max_results: int = 20, research_depth: str = "standard", max_workers: int = 3,
+    query_budget: int = 10, request_timeout: int = 45,
 ) -> tuple[list[OmniSearchResult], list[str]]:
     """Run enabled providers in priority order, merge, deduplicate, and report provider errors.
 
@@ -971,7 +975,8 @@ def modular_everywhere_search(
         try:
             if provider == "searxng" and searxng_url:
                 provider_results, provider_notes, discovered = adaptive_searxng_search(
-                    query=query, base_url=searxng_url, language=language, max_results=max_results, research_depth=research_depth
+                    query=query, base_url=searxng_url, language=language, max_results=max_results, research_depth=research_depth,
+                    max_workers=max_workers, query_budget=query_budget, request_timeout=request_timeout
                 )
                 results.extend(provider_results)
                 notes.extend(provider_notes)

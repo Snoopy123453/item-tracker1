@@ -106,6 +106,27 @@ class ProductKnowledgeBase:
         except json.JSONDecodeError:
             return None
 
+
+    def get_stale_research(self, query: str, location: str = "", depth: str = "Standard") -> dict[str, Any] | None:
+        """Return the newest cached package even when expired, for outage fallback."""
+        key = self.cache_key(query, location, depth)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload_json, created_at, expires_at FROM research_cache WHERE cache_key=?",
+                (key,),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            value = json.loads(row["payload_json"])
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(value, dict):
+            return None
+        value["_cache_created_at"] = row["created_at"]
+        value["_cache_expired_at"] = row["expires_at"]
+        return value
+
     def save_research(
         self,
         query: str,

@@ -5,16 +5,16 @@ def _source() -> str:
     return Path(__file__).resolve().parents[1].joinpath('app.py').read_text(encoding='utf-8')
 
 
-def test_v23_version_and_application_shell_present():
+def test_v24_version_and_application_shell_present():
     source = _source()
-    assert 'APP_VERSION = "23.0"' in source
+    assert 'APP_VERSION = "25.0"' in source
     assert 'class="app-shell"' in source
     assert 'Quick navigation' in source
 
 
 def test_light_and_dark_text_tokens_are_explicit():
     source = _source()
-    assert '"#f3f6fb"' in source
+    assert '"#f7f9fc"' in source
     assert '"#172033"' in source
     assert '--ph-text:' in source
     assert 'color:var(--ph-text)!important' in source

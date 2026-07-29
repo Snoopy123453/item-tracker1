@@ -30,6 +30,10 @@ class ResearchAgent:
         max_results: int,
         force_refresh: bool = False,
         progress: Callable[[str], None] | None = None,
+        cache_ttl_hours: int = 72,
+        max_workers: int = 3,
+        query_budget: int = 10,
+        request_timeout: int = 45,
     ) -> tuple[list[OmniSearchResult], list[str], dict[str, Any]]:
         started = time.monotonic()
         if not force_refresh:
@@ -50,22 +54,34 @@ class ResearchAgent:
 
         if progress:
             progress(f"Researching {query}")
-        results, notes = modular_everywhere_search(
-            query=query,
-            searxng_url=searxng_url,
-            brave_api_key=brave_api_key,
-            serpapi_api_key=serpapi_api_key,
-            provider_order=provider_order,
-            country_code=country_code,
-            language=language,
-            max_results=max_results,
-            research_depth=depth.casefold(),
-        )
+        try:
+            results, notes = modular_everywhere_search(
+                query=query,
+                searxng_url=searxng_url,
+                brave_api_key=brave_api_key,
+                serpapi_api_key=serpapi_api_key,
+                provider_order=provider_order,
+                country_code=country_code,
+                language=language,
+                max_results=max_results,
+                research_depth=depth.casefold(),
+                max_workers=max_workers,
+                query_budget=query_budget,
+                request_timeout=request_timeout,
+            )
+        except Exception as exc:
+            stale = self.knowledge_base.get_stale_research(query, location, depth)
+            if not stale:
+                raise
+            rows = stale.get("results", [])
+            results = [OmniSearchResult(**row) for row in rows]
+            notes = list(stale.get("notes", [])) + [f"Live providers failed; showing expired cache: {exc}"]
         self.knowledge_base.save_research(
             query,
             {"results": [asdict(r) for r in results], "notes": notes},
             location,
             depth,
+            ttl_hours=cache_ttl_hours,
         )
         duration = time.monotonic() - started
         run_id = self.knowledge_base.record_research_run(
