@@ -18,15 +18,13 @@ from product_finder.search import (
     google_shopping_search,
     google_spec_sheet_search,
     google_everywhere_search,
+    modular_everywhere_search,
     omni_from_existing,
     rank_omni_results,
 )
 from product_finder.spreadsheet import create_product_workbook_bytes
 from product_finder.purchase_tracker import extract_purchase_candidates, create_purchase_tracker_bytes
 from product_finder.rfq_builder import extract_rfq_items, build_rfq_email, create_rfq_workbook
-from product_finder.package_builder import (
-    build_known_package, create_package_workbook, package_to_rfq_items, parse_component_lines,
-)
 from product_finder.utils import clean_text, unique_keep_order
 from product_finder.vision import analyze_uploaded_image
 from product_finder.exact_image_match import build_visual_fingerprint, visually_verify_candidates
@@ -172,19 +170,28 @@ def _password_gate(config: AppConfig) -> bool:
     return False
 
 
-def _resolve_api_keys(config: AppConfig) -> tuple[str, str]:
+def _resolve_api_keys(config: AppConfig) -> tuple[str, str, str, str]:
     server_keys_allowed = bool(config.app_password) or config.allow_public_with_server_keys
     serpapi_api_key = config.serpapi_api_key if server_keys_allowed else ""
+    brave_api_key = config.brave_search_api_key if server_keys_allowed else ""
+    searxng_url = config.searxng_url
     openai_api_key = config.openai_api_key if server_keys_allowed else ""
 
     with st.sidebar:
         st.header("Service status")
-        if config.serpapi_api_key and not server_keys_allowed:
-            st.warning("Hosted retailer-search key is disabled until APP_PASSWORD is set or public key use is explicitly enabled.")
+        if searxng_url:
+            st.success("Primary web search: SearXNG configured")
+        elif brave_api_key:
+            st.success("Primary web search: Brave configured")
         elif serpapi_api_key:
-            st.success("Retailer and nearby search: ready")
+            st.success("Web search: SerpApi compatibility mode")
         else:
-            st.warning("Retailer and nearby search: API key missing")
+            st.warning("Web search provider missing. Configure SEARXNG_URL or BRAVE_SEARCH_API_KEY.")
+
+        if serpapi_api_key:
+            st.info("Google Shopping, Maps, and Lens compatibility: ready")
+        else:
+            st.caption("Google Shopping, Maps, and Lens are disabled without SerpApi; OmniSearch still works with SearXNG/Brave.")
 
         if config.openai_api_key and not server_keys_allowed:
             st.warning("Hosted image-recognition key is disabled by the access policy.")
@@ -194,23 +201,17 @@ def _resolve_api_keys(config: AppConfig) -> tuple[str, str]:
             st.info("Uploaded-image recognition: API key missing")
 
         if config.allow_user_api_keys:
-            with st.expander("Use different API keys"):
-                user_serpapi_key = st.text_input(
-                    "SerpApi API key",
-                    type="password",
-                    help="Used only for this browser session and not written to the spreadsheet.",
-                )
-                user_openai_key = st.text_input(
-                    "OpenAI API key",
-                    type="password",
-                    help="Used only for this browser session and not written to the spreadsheet.",
-                )
-                if user_serpapi_key.strip():
-                    serpapi_api_key = user_serpapi_key.strip()
-                if user_openai_key.strip():
-                    openai_api_key = user_openai_key.strip()
+            with st.expander("Use different API settings"):
+                user_searxng_url = st.text_input("SearXNG URL", value="", help="Example: https://search.example.com")
+                user_brave_key = st.text_input("Brave Search API key", type="password")
+                user_serpapi_key = st.text_input("SerpApi key (optional compatibility)", type="password")
+                user_openai_key = st.text_input("OpenAI API key", type="password")
+                if user_searxng_url.strip(): searxng_url = user_searxng_url.strip().rstrip("/")
+                if user_brave_key.strip(): brave_api_key = user_brave_key.strip()
+                if user_serpapi_key.strip(): serpapi_api_key = user_serpapi_key.strip()
+                if user_openai_key.strip(): openai_api_key = user_openai_key.strip()
 
-    return serpapi_api_key, openai_api_key
+    return serpapi_api_key, openai_api_key, brave_api_key, searxng_url
 
 
 def _show_input_records(records: list[InputRecord]) -> None:
@@ -810,70 +811,6 @@ def _render_exact_image_match(config: AppConfig, serpapi_api_key: str, openai_ap
 
 
 
-def _render_package_builder() -> None:
-    st.markdown("""<div class="hero"><h1>Fixture Package Builder</h1><p>Turn one fixture-schedule line into a complete component package, one RFQ, and one vendor quote worksheet with price, stock, and lead-time fields.</p></div>""", unsafe_allow_html=True)
-    template = st.selectbox("Start from", ["S-1 complete sink package", "Paste a fixture schedule description", "Build a custom package"])
-    a, b, c = st.columns([1, 2, 1])
-    with a:
-        item_tag = st.text_input("Item tag", value="S-1" if template == "S-1 complete sink package" else "")
-    with b:
-        package_name = st.text_input("Package name", value="S-1 Complete Sink Package" if template == "S-1 complete sink package" else "")
-    with c:
-        package_qty = st.number_input("Package qty", min_value=1, value=1, step=1)
-
-    default_description = (
-        "JUST NO. USXN1842A-J SINGLE COMPARTMENT, COMPLETE WITH CHICAGO NO. "
-        "350-GN8AE35ABCP FAUCET, CHICAGO NO. 748-665ABCP BUBBLER, CHICAGO NO. "
-        "1013-ABCP ANGLE STOPS, MCGUIRE 152N FLAT STRAINER, AND MCGUIRE "
-        "PW2150GJ 1-1/2 P-TRAP KIT WITH PRE-WRAPPED INSULATION."
-    )
-    if template == "Build a custom package":
-        component_text = st.text_area(
-            "Components - one per line",
-            placeholder="Sink | JUST | USXN1842A-J | Stainless-steel sink | 1\nFaucet | Chicago Faucets | 350-GN8AE35ABCP | 1.5 GPM faucet | 1",
-            height=220,
-        )
-        package = parse_component_lines(item_tag, package_name, component_text, package_qty) if component_text.strip() else None
-    else:
-        description = st.text_area("Fixture schedule description", value=default_description if template == "S-1 complete sink package" else "", height=180)
-        package = build_known_package(item_tag, description, package_qty) if description.strip() else None
-        if description.strip() and package is None:
-            st.warning("This package is not recognized yet. Choose 'Build a custom package' and paste one component per line.")
-
-    if not package:
-        st.info("Enter or select a package to continue.")
-        return
-
-    rows = [component.to_row() for component in package.components]
-    edited = st.data_editor(
-        pd.DataFrame(rows),
-        use_container_width=True, hide_index=True, num_rows="dynamic",
-        column_config={
-            "quantity": st.column_config.NumberColumn("Qty per package", min_value=0, step=1),
-            "unit_price": st.column_config.NumberColumn("Unit price", format="$%.2f"),
-            "product_link": st.column_config.LinkColumn("Product link"),
-            "lead_time": st.column_config.TextColumn("Lead Time"),
-            "quote_number": st.column_config.TextColumn("Quote #"),
-        },
-    )
-    from product_finder.package_builder import PackageComponent
-    package.components = [PackageComponent(**row) for row in edited.to_dict("records")]
-
-    total_known = sum((c.unit_price or 0) * c.quantity * package.quantity for c in package.components)
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Package components", len(package.components))
-    m2.metric("Total pieces", int(sum(c.quantity * package.quantity for c in package.components)))
-    m3.metric("Known package price", f"${total_known:,.2f}")
-
-    workbook = create_package_workbook(package)
-    safe_name = (clean_text(package.item_tag) or "Fixture").replace(" ", "_")
-    st.download_button("Download package + quote workbook", workbook, file_name=f"{safe_name}_Complete_Package.xlsx", mime=EXCEL_MIME, type="primary", use_container_width=True)
-
-    st.markdown("### Send the complete package to Request Quotes")
-    st.caption("Copy these rows into the Request Quotes workspace or download the package workbook for one vendor quote/PO.")
-    st.dataframe(pd.DataFrame(package_to_rfq_items(package)), use_container_width=True, hide_index=True)
-
-
 def _render_request_quotes() -> None:
     st.markdown("""<div class="hero"><h1>Request Quotes</h1><p>Import a Product Hunter workbook, select the exact products, and generate an email-ready RFQ plus a vendor quote workbook with lead-time and delivery fields.</p></div>""", unsafe_allow_html=True)
     uploaded = st.file_uploader("Upload a Product Hunter or project Excel workbook", type=["xlsx"], key="rfq_upload")
@@ -948,20 +885,17 @@ def main() -> None:
         return
 
     with st.sidebar:
-        app_mode = st.radio("Workspace", ["Product Search", "Package Builder", "Request Quotes", "Exact Product From Image", "Spec Sheet Compare", "Project Intelligence", "Procurement Control Center", "Purchase Tracker"], horizontal=False)
+        app_mode = st.radio("Workspace", ["Product Search", "Request Quotes", "Exact Product From Image", "Spec Sheet Compare", "Project Intelligence", "Procurement Control Center", "Purchase Tracker"], horizontal=False)
 
-    if app_mode == "Package Builder":
-        _render_package_builder()
-        return
     if app_mode == "Request Quotes":
         _render_request_quotes()
         return
     if app_mode == "Spec Sheet Compare":
-        _, openai_api_key = _resolve_api_keys(config)
+        _, openai_api_key, _, _ = _resolve_api_keys(config)
         _render_spec_sheet_compare(config, openai_api_key)
         return
     if app_mode == "Exact Product From Image":
-        serpapi_api_key, openai_api_key = _resolve_api_keys(config)
+        serpapi_api_key, openai_api_key, brave_api_key, searxng_url = _resolve_api_keys(config)
         _render_exact_image_match(config, serpapi_api_key, openai_api_key)
         return
     if app_mode == "Purchase Tracker":
@@ -971,13 +905,13 @@ def main() -> None:
         _render_procurement_control_center()
         return
     if app_mode == "Project Intelligence":
-        serpapi_api_key, openai_api_key = _resolve_api_keys(config)
+        serpapi_api_key, openai_api_key, brave_api_key, searxng_url = _resolve_api_keys(config)
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
     st.markdown("""<div class="hero"><h1>Product Hunter Pro</h1><p>One search across manufacturers, catalogs, distributors, retailers, technical documents, local suppliers, and legacy sources—merged into one evidence-ranked procurement report.</p></div>""", unsafe_allow_html=True)
 
-    serpapi_api_key, openai_api_key = _resolve_api_keys(config)
+    serpapi_api_key, openai_api_key, brave_api_key, searxng_url = _resolve_api_keys(config)
 
     with st.sidebar:
         st.divider()
@@ -1138,8 +1072,9 @@ def main() -> None:
         )
         return
 
-    if not serpapi_api_key:
-        note = "No live listings were fetched because the retailer-search API is not configured."
+    web_search_ready = bool(searxng_url or brave_api_key or serpapi_api_key)
+    if not web_search_ready:
+        note = "No live results were fetched because no web-search provider is configured."
         run_notes.append(note)
         st.error(note)
         filename, workbook_bytes = create_product_workbook_bytes(
@@ -1166,13 +1101,13 @@ def main() -> None:
 
     if search_everywhere:
         include_online = include_nearby = include_specs = include_manufacturer = include_broad_web = True
-    steps_per_job = int(include_online) + int(include_nearby) + int(include_specs) + int(include_manufacturer) + int(include_broad_web)
+    steps_per_job = (int(include_online and bool(serpapi_api_key)) + int(include_nearby and bool(serpapi_api_key)) + int(include_specs and bool(serpapi_api_key)) + int(include_manufacturer and bool(serpapi_api_key)) + int(include_broad_web))
     total_steps = len(search_jobs) * steps_per_job
     completed = 0
     progress = st.progress(0, text="Searching retailers...")
 
     for query, input_source in search_jobs:
-        if include_online:
+        if include_online and serpapi_api_key:
             try:
                 product_results.extend(
                     google_shopping_search(
@@ -1192,7 +1127,7 @@ def main() -> None:
             completed += 1
             progress.progress(completed / total_steps, text=f"Searched online listings for: {query}")
 
-        if include_nearby:
+        if include_nearby and serpapi_api_key:
             try:
                 store_results.extend(
                     google_maps_nearby_stores(
@@ -1211,7 +1146,7 @@ def main() -> None:
             completed += 1
             progress.progress(completed / total_steps, text=f"Searched nearby retailers for: {query}")
 
-        if include_specs:
+        if include_specs and serpapi_api_key:
             try:
                 spec_documents.extend(
                     google_spec_sheet_search(
@@ -1229,7 +1164,7 @@ def main() -> None:
             completed += 1
             progress.progress(completed / total_steps, text=f"Searched technical documents for: {query}")
 
-        if include_manufacturer:
+        if include_manufacturer and serpapi_api_key:
             try:
                 manufacturer_results.extend(
                     google_manufacturer_search(
@@ -1249,7 +1184,13 @@ def main() -> None:
 
         if include_broad_web:
             try:
-                omni_results.extend(google_everywhere_search(query=query, api_key=serpapi_api_key, country_code=country_code, language=language, max_results=max_omni_results))
+                provider_results, provider_notes = modular_everywhere_search(
+                    query=query, searxng_url=searxng_url, brave_api_key=brave_api_key,
+                    serpapi_api_key=serpapi_api_key, provider_order=config.search_provider_order,
+                    country_code=country_code, language=language, max_results=max_omni_results,
+                )
+                omni_results.extend(provider_results)
+                run_notes.extend(f"OmniSearch provider warning for '{query}': {note}" for note in provider_notes)
             except Exception as exc:  # noqa: BLE001
                 message = f"Broad OmniSearch failed for '{query}': {exc}"
                 st.warning(message)

@@ -577,3 +577,133 @@ def rank_omni_results(results: list[OmniSearchResult]) -> list[OmniSearchResult]
         counters[item.query] = counters.get(item.query, 0) + 1
         item.rank = counters[item.query]
     return ranked
+
+# --- Modular search providers v14 -------------------------------------------
+BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+
+
+def _organic_to_omni(*, query: str, items: list[dict[str, Any]], raw_source: str) -> list[OmniSearchResult]:
+    """Normalize generic web-search responses into OmniSearch results."""
+    results: list[OmniSearchResult] = []
+    q = clean_text(query)
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        link = clean_text(item.get("url") or item.get("link"))
+        if not link:
+            continue
+        title = clean_text(item.get("title") or item.get("name"))
+        snippet = clean_text(item.get("description") or item.get("content") or item.get("snippet"))
+        domain = urlparse(link).netloc.lower().removeprefix("www.")
+        source_type, kind, official, distributor, exact_model, legacy, reliability, evidence = _classify_web_result(
+            query=q, title=title, snippet=snippet, link=link
+        )
+        query_terms = [t.lower() for t in q.replace("-", " ").split() if len(t) > 2]
+        haystack = f"{title} {snippet} {link}".lower()
+        coverage = sum(1 for t in query_terms if t in haystack) / max(1, len(query_terms))
+        match = 100.0 if exact_model else round(45.0 + 45.0 * coverage, 1)
+        overall = round(match * 0.62 + reliability * 0.38, 1)
+        status = "Verified exact source" if exact_model and official else "Exact model found" if exact_model else "Likely relevant" if overall >= 65 else "Needs review"
+        results.append(OmniSearchResult(
+            query=q, rank=0, title=title, source_name=domain, source_domain=domain,
+            source_type=source_type, result_kind=kind, link=link, snippet=snippet,
+            official_source=official, authorized_distributor=distributor,
+            exact_model_mentioned=exact_model, document_pdf=link.lower().split("?")[0].endswith(".pdf"),
+            legacy_or_discontinued=legacy, source_reliability=reliability,
+            match_score=match, overall_score=overall, verification_status=status,
+            evidence=evidence, raw_source=raw_source,
+        ))
+    return results
+
+
+def brave_everywhere_search(
+    *, query: str, api_key: str, country_code: str = "us", language: str = "en", max_results: int = 20,
+) -> list[OmniSearchResult]:
+    """Search Brave's independent web index and normalize results."""
+    if not clean_text(api_key):
+        return []
+    params = {
+        "q": clean_text(query),
+        "count": max(1, min(int(max_results), 20)),
+        "country": (country_code or "us").upper(),
+        "search_lang": language or "en",
+        "safesearch": "moderate",
+        "text_decorations": "false",
+    }
+    try:
+        response = requests.get(
+            BRAVE_SEARCH_ENDPOINT,
+            params=params,
+            headers={"X-Subscription-Token": api_key, "Accept": "application/json", "User-Agent": USER_AGENT},
+            timeout=(10, 45),
+        )
+    except requests.Timeout as exc:
+        raise RuntimeError("Brave Search timed out.") from exc
+    except requests.RequestException as exc:
+        raise RuntimeError("Brave Search could not be reached.") from exc
+    if not response.ok:
+        raise RuntimeError(f"Brave Search returned HTTP {response.status_code}.")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Brave Search returned invalid JSON.") from exc
+    items = ((data.get("web") or {}).get("results") or []) if isinstance(data, dict) else []
+    return _organic_to_omni(query=query, items=items, raw_source="Brave Search API")
+
+
+def searxng_everywhere_search(
+    *, query: str, base_url: str, language: str = "en", max_results: int = 20,
+) -> list[OmniSearchResult]:
+    """Search a configured SearXNG instance via its JSON API."""
+    base = clean_text(base_url).rstrip("/")
+    if not base:
+        return []
+    try:
+        response = requests.get(
+            f"{base}/search",
+            params={"q": clean_text(query), "format": "json", "language": language or "en", "safesearch": 1},
+            headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+            timeout=(10, 60),
+        )
+    except requests.Timeout as exc:
+        raise RuntimeError("SearXNG timed out.") from exc
+    except requests.RequestException as exc:
+        raise RuntimeError("SearXNG could not be reached.") from exc
+    if response.status_code == 403:
+        raise RuntimeError("SearXNG JSON output is disabled on this instance. Enable format: json in settings.yml.")
+    if not response.ok:
+        raise RuntimeError(f"SearXNG returned HTTP {response.status_code}.")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError("SearXNG returned invalid JSON.") from exc
+    items = (data.get("results") or []) if isinstance(data, dict) else []
+    normalized = _organic_to_omni(query=query, items=items[:max_results], raw_source="SearXNG")
+    return normalized
+
+
+def modular_everywhere_search(
+    *, query: str, searxng_url: str = "", brave_api_key: str = "", serpapi_api_key: str = "",
+    provider_order: str = "searxng,brave,serpapi", country_code: str = "us", language: str = "en",
+    max_results: int = 20,
+) -> tuple[list[OmniSearchResult], list[str]]:
+    """Run enabled providers in priority order, merge, deduplicate, and report provider errors.
+
+    SearXNG is the recommended primary provider because it can be self-hosted without per-query fees.
+    Brave is the reliable hosted fallback. SerpApi remains optional for compatibility and specialized
+    Google Shopping/Maps/Lens features.
+    """
+    providers = [p.strip().lower() for p in clean_text(provider_order).split(",") if p.strip()]
+    results: list[OmniSearchResult] = []
+    notes: list[str] = []
+    for provider in unique_keep_order(providers):
+        try:
+            if provider == "searxng" and searxng_url:
+                results.extend(searxng_everywhere_search(query=query, base_url=searxng_url, language=language, max_results=max_results))
+            elif provider == "brave" and brave_api_key:
+                results.extend(brave_everywhere_search(query=query, api_key=brave_api_key, country_code=country_code, language=language, max_results=max_results))
+            elif provider == "serpapi" and serpapi_api_key:
+                results.extend(google_everywhere_search(query=query, api_key=serpapi_api_key, country_code=country_code, language=language, max_results=max_results))
+        except Exception as exc:  # isolate provider outages and continue with fallbacks
+            notes.append(f"{provider}: {exc}")
+    return rank_omni_results(results), notes

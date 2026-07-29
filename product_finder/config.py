@@ -13,6 +13,9 @@ SecretGetter = Callable[[str, str], object]
 @dataclass(frozen=True)
 class AppConfig:
     serpapi_api_key: str
+    brave_search_api_key: str
+    searxng_url: str
+    search_provider_order: str
     openai_api_key: str
     openai_model: str
     country_code: str
@@ -83,6 +86,9 @@ def load_config(secret_getter: SecretGetter | None = None) -> AppConfig:
 
     return AppConfig(
         serpapi_api_key=_clean_secret(get("SERPAPI_API_KEY")),
+        brave_search_api_key=_clean_secret(get("BRAVE_SEARCH_API_KEY")),
+        searxng_url=(get("SEARXNG_URL", "") or "").rstrip("/"),
+        search_provider_order=get("SEARCH_PROVIDER_ORDER", "searxng,brave,serpapi") or "searxng,brave,serpapi",
         openai_api_key=_clean_secret(get("OPENAI_API_KEY")),
         openai_model=get("OPENAI_MODEL", "gpt-4.1-mini") or "gpt-4.1-mini",
         country_code=(get("COUNTRY_CODE", "us") or "us").lower(),

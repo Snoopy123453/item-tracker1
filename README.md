@@ -135,19 +135,6 @@ Product Hunter Pro v11 can search manufacturer product pages, catalogs, support 
 
 Product Search searches manufacturers, catalogs, distributors, retailers, local suppliers, technical documents, and legacy/discontinued sources in one run, then merges and ranks the evidence in a unified table and Excel worksheet.
 
-## Fixture Package Builder
+## v14 modular search providers
 
-The app now includes a **Package Builder** workspace. It expands a fixture-schedule item into its required manufacturer components, keeps them grouped under one item tag, and exports a package workbook containing supplier, unit price, stock status, lead time, quote number, product link, and package total fields.
-
-The first built-in template is the project S-1 sink package:
-
-- JUST USXN1842A-J sink
-- Chicago Faucets 350-GN8AE35ABCP faucet
-- Chicago Faucets 748-665ABCP bubbler
-- Chicago Faucets 1013-ABCP angle stop
-- McGuire 152N basket strainer
-- McGuire PW2150GJ insulated P-trap kit
-
-Custom packages can be entered one component per line using:
-
-`Component | Manufacturer | Model | Description | Qty`
+OmniSearch no longer requires SerpApi. Configure a self-hosted SearXNG instance as the primary provider and optionally add Brave Search as a hosted fallback. SerpApi is retained only for optional Google Shopping, Maps, and Lens compatibility. Provider failures are isolated, and results are merged, deduplicated, classified, and evidence-ranked.
