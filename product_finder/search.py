@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -10,6 +11,51 @@ from .utils import clean_text, unique_keep_order
 
 SERPAPI_ENDPOINT = "https://serpapi.com/search.json"
 USER_AGENT = "ProductHunterWebApp/1.0"
+
+
+class SearchInfrastructureUnavailable(RuntimeError):
+    """Raised when SearXNG is reachable but its upstream engines are unavailable."""
+
+
+@dataclass
+class SearxngDiagnostics:
+    query: str
+    raw_results: int = 0
+    normalized_results: int = 0
+    unresponsive_engines: list[tuple[str, str]] = field(default_factory=list)
+    attempts: int = 0
+
+    @property
+    def infrastructure_unavailable(self) -> bool:
+        return self.raw_results == 0 and bool(self.unresponsive_engines)
+
+    def summary(self) -> str:
+        if not self.unresponsive_engines:
+            return f"SearXNG raw results: {self.raw_results}; normalized results: {self.normalized_results}."
+        engines = "; ".join(f"{name}: {reason}" for name, reason in self.unresponsive_engines)
+        return (
+            f"SearXNG raw results: {self.raw_results}; normalized results: {self.normalized_results}; "
+            f"unresponsive engines: {engines}."
+        )
+
+
+def _parse_unresponsive_engines(data: dict[str, Any]) -> list[tuple[str, str]]:
+    output: list[tuple[str, str]] = []
+    raw = data.get("unresponsive_engines") or []
+    if not isinstance(raw, list):
+        return output
+    for entry in raw:
+        if isinstance(entry, (list, tuple)) and entry:
+            name = clean_text(entry[0])
+            reason = clean_text(entry[1]) if len(entry) > 1 else "Unavailable"
+        elif isinstance(entry, dict):
+            name = clean_text(entry.get("engine") or entry.get("name"))
+            reason = clean_text(entry.get("error") or entry.get("reason") or "Unavailable")
+        else:
+            continue
+        if name:
+            output.append((name, reason or "Unavailable"))
+    return output
 
 
 def _serpapi_get(params: dict[str, Any], *, timeout: int = 60) -> dict[str, Any]:
@@ -653,13 +699,14 @@ def brave_everywhere_search(
 
 
 def searxng_everywhere_search(
-    *, query: str, base_url: str, language: str = "en", max_results: int = 20, request_timeout: int = 45,
+    *, query: str, base_url: str, language: str = "en", max_results: int = 20,
+    request_timeout: int = 45, diagnostics_sink: list[SearxngDiagnostics] | None = None,
 ) -> list[OmniSearchResult]:
     """Search SearXNG and normalize its JSON results.
 
-    Some SearXNG engines return no results when a generic language code such as ``en`` or
-    safe-search parameters are forced.  The first request therefore mirrors the simplest
-    working browser/API URL (q + format only).  A localized retry is used only when needed.
+    The request begins with only ``q`` and ``format=json`` because that is the most
+    compatible SearXNG API shape. Engine outages are surfaced separately from true
+    zero-result searches so callers do not cache provider failures as valid research.
     """
     base = clean_text(base_url).rstrip("/")
     if not base:
@@ -667,50 +714,72 @@ def searxng_everywhere_search(
 
     endpoint = f"{base}/search"
     headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
-    attempts = [
-        {"q": clean_text(query), "format": "json"},
-    ]
+    attempts = [{"q": clean_text(query), "format": "json"}]
     language_value = clean_text(language)
     if language_value:
         if language_value.lower() == "en":
             language_value = "en-US"
         attempts.append({"q": clean_text(query), "format": "json", "language": language_value, "safesearch": 0})
 
-    last_response = None
+    combined_unresponsive: list[tuple[str, str]] = []
+    last_diag = SearxngDiagnostics(query=clean_text(query))
     for params in attempts:
         try:
             response = requests.get(endpoint, params=params, headers=headers, timeout=(10, max(10, int(request_timeout))))
         except requests.Timeout as exc:
-            raise RuntimeError("SearXNG timed out. The Render free service may still be waking up.") from exc
+            raise SearchInfrastructureUnavailable(
+                "SearXNG timed out. The Render free service may still be waking up."
+            ) from exc
         except requests.RequestException as exc:
-            raise RuntimeError("SearXNG could not be reached.") from exc
-        last_response = response
+            raise SearchInfrastructureUnavailable("SearXNG could not be reached.") from exc
         if response.status_code == 403:
-            raise RuntimeError("SearXNG JSON output is disabled on this instance. Enable format: json in settings.yml.")
+            raise SearchInfrastructureUnavailable(
+                "SearXNG JSON output is disabled on this instance. Enable format: json in settings.yml."
+            )
         if not response.ok:
-            raise RuntimeError(f"SearXNG returned HTTP {response.status_code}.")
+            raise SearchInfrastructureUnavailable(f"SearXNG returned HTTP {response.status_code}.")
         try:
             data = response.json()
         except ValueError as exc:
-            raise RuntimeError("SearXNG returned invalid JSON.") from exc
+            raise SearchInfrastructureUnavailable("SearXNG returned invalid JSON.") from exc
+
         items = (data.get("results") or []) if isinstance(data, dict) else []
+        unresponsive = _parse_unresponsive_engines(data if isinstance(data, dict) else {})
+        for item in unresponsive:
+            if item not in combined_unresponsive:
+                combined_unresponsive.append(item)
         normalized = _organic_to_omni(query=query, items=items[:max_results], raw_source="SearXNG")
+        last_diag = SearxngDiagnostics(
+            query=clean_text(query),
+            raw_results=len(items),
+            normalized_results=len(normalized),
+            unresponsive_engines=list(combined_unresponsive),
+            attempts=last_diag.attempts + 1,
+        )
         if normalized:
+            if diagnostics_sink is not None:
+                diagnostics_sink.append(last_diag)
             return normalized
 
+    if diagnostics_sink is not None:
+        diagnostics_sink.append(last_diag)
+    if last_diag.infrastructure_unavailable:
+        raise SearchInfrastructureUnavailable(
+            "Search infrastructure unavailable. " + last_diag.summary()
+        )
     return []
 
 
 
 def searxng_health_check(*, base_url: str, language: str = "en") -> tuple[bool, str]:
-    """Verify that a SearXNG instance is reachable and permits JSON output."""
+    """Verify JSON access and confirm that at least one upstream engine can answer."""
     base = clean_text(base_url).rstrip("/")
     if not base:
         return False, "SearXNG URL is empty."
     try:
         response = requests.get(
             f"{base}/search",
-            params={"q": "test", "format": "json", "language": language or "en", "safesearch": 1},
+            params={"q": "test", "format": "json"},
             headers={"Accept": "application/json", "User-Agent": USER_AGENT},
             timeout=(8, 20),
         )
@@ -728,7 +797,13 @@ def searxng_health_check(*, base_url: str, language: str = "en") -> tuple[bool, 
         return False, "The instance did not return JSON. Confirm format=json is enabled."
     if not isinstance(data, dict) or "results" not in data:
         return False, "The response is JSON but does not look like a SearXNG search response."
-    return True, "SearXNG is reachable and JSON search is enabled."
+    results = data.get("results") or []
+    unresponsive = _parse_unresponsive_engines(data)
+    if not results and unresponsive:
+        detail = "; ".join(f"{name}: {reason}" for name, reason in unresponsive)
+        return False, f"SearXNG is reachable, but upstream engines are unavailable: {detail}."
+    return True, f"SearXNG is healthy and returned {len(results)} test result(s)."
+
 
 
 def targeted_searxng_search(
@@ -877,28 +952,64 @@ def adaptive_searxng_search(
     notes: list[str] = []
     variants = build_procurement_query_variants(q, research_depth=research_depth, query_budget=query_budget)
     broad: list[OmniSearchResult] = []
+    diagnostics: list[SearxngDiagnostics] = []
     per_query = max(3, min(8, max_results // max(1, min(len(variants), 8))))
 
-    # Search variants concurrently so a deep research run does not become excessively slow.
-    workers = min(max(1, int(max_workers)), max(1, len(variants)))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(
-                searxng_everywhere_search,
-                query=variant,
-                base_url=base_url,
-                language=language,
-                max_results=per_query,
-                request_timeout=request_timeout,
-            ): variant
-            for variant in variants
-        }
-        for future in as_completed(futures):
-            variant = futures[future]
-            try:
-                broad.extend(future.result())
-            except Exception as exc:
-                notes.append(f"searxng: research query failed ({variant}): {exc}")
+    # Circuit breaker: one minimal request verifies that upstream engines are usable.
+    # This avoids launching many doomed requests when a free-hosted SearXNG instance is blocked.
+    minimal = variants[0] if variants else q
+    minimal_results = searxng_everywhere_search(
+        query=minimal,
+        base_url=base_url,
+        language=language,
+        max_results=per_query,
+        request_timeout=request_timeout,
+        diagnostics_sink=diagnostics,
+    )
+    broad.extend(minimal_results)
+    remaining_variants = [variant for variant in variants if variant != minimal]
+
+    # Search the remaining variants concurrently only after the provider passes the circuit breaker.
+    workers = min(max(1, int(max_workers)), max(1, len(remaining_variants)))
+    if remaining_variants:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    searxng_everywhere_search,
+                    query=variant,
+                    base_url=base_url,
+                    language=language,
+                    max_results=per_query,
+                    request_timeout=request_timeout,
+                    diagnostics_sink=diagnostics,
+                ): variant
+                for variant in remaining_variants
+            }
+            for future in as_completed(futures):
+                variant = futures[future]
+                try:
+                    broad.extend(future.result())
+                except SearchInfrastructureUnavailable as exc:
+                    notes.append(f"searxng: provider degraded during query ({variant}): {exc}")
+                except Exception as exc:
+                    notes.append(f"searxng: research query failed ({variant}): {exc}")
+
+    if diagnostics:
+        raw_total = sum(item.raw_results for item in diagnostics)
+        normalized_total = sum(item.normalized_results for item in diagnostics)
+        engine_failures: list[tuple[str, str]] = []
+        for item in diagnostics:
+            for engine in item.unresponsive_engines:
+                if engine not in engine_failures:
+                    engine_failures.append(engine)
+        notes.append(
+            f"SearXNG diagnostics: raw results={raw_total}; normalized results={normalized_total}; "
+            f"requests={sum(item.attempts for item in diagnostics)}."
+        )
+        if engine_failures:
+            notes.append(
+                "SearXNG engine health: " + "; ".join(f"{name}: {reason}" for name, reason in engine_failures)
+            )
 
     for item in broad:
         item.query = q
@@ -987,6 +1098,11 @@ def modular_everywhere_search(
                 results.extend(brave_everywhere_search(query=query, api_key=brave_api_key, country_code=country_code, language=language, max_results=max_results))
             elif provider == "serpapi" and serpapi_api_key:
                 results.extend(google_everywhere_search(query=query, api_key=serpapi_api_key, country_code=country_code, language=language, max_results=max_results))
+        except SearchInfrastructureUnavailable as exc:
+            notes.append(f"{provider}: {exc}")
         except Exception as exc:  # isolate provider outages and continue with fallbacks
             notes.append(f"{provider}: {exc}")
-    return rank_omni_results(results), notes
+    ranked = rank_omni_results(results)
+    if not ranked and any("Search infrastructure unavailable" in note or "SearXNG timed out" in note or "could not be reached" in note for note in notes):
+        raise SearchInfrastructureUnavailable(" | ".join(notes))
+    return ranked, notes

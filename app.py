@@ -51,7 +51,7 @@ from product_finder.procurement_controls import (
 
 
 APP_TITLE = "Product Hunter Pro"
-APP_VERSION = "27.0"
+APP_VERSION = "28.0"
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -1009,7 +1009,7 @@ def _format_epoch(value: object) -> str:
 
 
 def _render_dashboard_workspace() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v27</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v28</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
     kb = ProductKnowledgeBase()
     stats = kb.stats()
     run_stats = kb.research_run_stats()
@@ -1135,7 +1135,7 @@ def _render_knowledge_base_workspace() -> None:
 
 
 def _render_system_center(config: AppConfig) -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Enterprise Operations · v27</div><h1>System Center</h1><p>Validate service health, inspect incidents, export diagnostics, and resolve configuration problems without exposing secrets.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Enterprise Operations · v28</div><h1>System Center</h1><p>Validate service health, inspect incidents, export diagnostics, and resolve configuration problems without exposing secrets.</p></div>""", unsafe_allow_html=True)
     serpapi_api_key, openai_api_key, brave_api_key, searxng_url = _resolve_api_keys(config)
     db_path = ProductKnowledgeBase().path
 
@@ -1164,16 +1164,16 @@ def _render_system_center(config: AppConfig) -> None:
         use_container_width=True,
     )
 
-    if run_now or "v27_health_checks" not in st.session_state:
+    if run_now or "v28_health_checks" not in st.session_state:
         with st.spinner("Checking configured services..."):
-            st.session_state["v27_health_checks"] = [
+            st.session_state["v28_health_checks"] = [
                 item.to_row() for item in run_health_checks(
                     searxng_url=searxng_url, openai_api_key=openai_api_key, db_path=db_path
                 )
             ]
-        record_event("health_check", "System health checks completed", checks=len(st.session_state["v27_health_checks"]))
+        record_event("health_check", "System health checks completed", checks=len(st.session_state["v28_health_checks"]))
 
-    checks = pd.DataFrame(st.session_state.get("v27_health_checks", []))
+    checks = pd.DataFrame(st.session_state.get("v28_health_checks", []))
     if not checks.empty:
         healthy = int(checks["status"].isin(["Healthy", "Configured"]).sum())
         degraded = int(checks["status"].isin(["Degraded", "Review", "Not configured"]).sum())
@@ -1383,7 +1383,7 @@ def _main_impl() -> None:
 
     with st.sidebar:
         st.markdown("### PRODUCT HUNTER")
-        st.caption("Procurement Intelligence Platform · v27")
+        st.caption("Procurement Intelligence Platform · v28")
         app_mode = st.radio("Workspace", ["Dashboard", "Product Search", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
         with st.expander("Appearance"):
             theme = st.selectbox("Theme", ["Light", "Dark"], index=0 if st.session_state["ui_theme"] == "Light" else 1)
@@ -1432,7 +1432,7 @@ def _main_impl() -> None:
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
-    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v27</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Research</span><span>Evidence</span><span>Products</span><span>Documents</span><span>Suppliers</span><span>RFQ</span><span>Export</span></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v28</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Research</span><span>Evidence</span><span>Products</span><span>Documents</span><span>Suppliers</span><span>RFQ</span><span>Export</span></div>""", unsafe_allow_html=True)
 
     command_cols = st.columns([1, 1, 1, 1, 5])
     if command_cols[0].button("New research", use_container_width=True):
@@ -1575,6 +1575,8 @@ def _main_impl() -> None:
     manufacturer_results: list[ManufacturerResult] = []
     omni_results: list[OmniSearchResult] = []
     run_notes: list[str] = []
+    search_provider_outage = False
+    stale_cache_used = False
 
     with st.status("Recognizing products and building search terms...", expanded=True) as status:
         if text_queries:
@@ -1759,8 +1761,13 @@ def _main_impl() -> None:
                 omni_results.extend(provider_results)
                 if research_meta.get("cache_hit"):
                     run_notes.append(f"Knowledge Base cache used for '{query}'.")
+                if research_meta.get("provider_outage"):
+                    search_provider_outage = True
+                if research_meta.get("used_stale_cache"):
+                    stale_cache_used = True
                 run_notes.extend(f"OmniSearch provider warning for '{query}': {note}" for note in provider_notes)
             except Exception as exc:  # noqa: BLE001
+                search_provider_outage = True
                 message = f"Broad OmniSearch failed for '{query}': {exc}"
                 st.warning(message)
                 run_notes.append(message)
@@ -1788,7 +1795,17 @@ def _main_impl() -> None:
         run_notes=" | ".join(unique_keep_order(run_notes)),
     )
 
-    st.success(f"Research complete. Your procurement workbook will download as **{filename}**.")
+    if search_provider_outage and not omni_results:
+        st.error(
+            "Search infrastructure is temporarily unavailable. The workbook was still created from recognized inputs, "
+            "but live sources were not returned. Open Diagnostics or retry after the SearXNG engines recover."
+        )
+    elif stale_cache_used:
+        st.warning(
+            f"Live search was unavailable, so Product Hunter used older cached evidence. Your workbook will download as **{filename}**."
+        )
+    else:
+        st.success(f"Research complete. Your procurement workbook will download as **{filename}**.")
     best_count = sum(1 for item in product_results if item.best_match)
     if best_count:
         st.info(
@@ -1811,10 +1828,16 @@ def _main_impl() -> None:
             for note in unique_keep_order(run_notes):
                 st.write(f"- {note}")
     if include_broad_web and not omni_results:
-        st.warning(
-            "SearXNG completed but returned no normalized results. v18 retries using the same minimal "
-            "q + format=json request that works in your browser and shows provider diagnostics here."
-        )
+        if search_provider_outage:
+            st.error(
+                "Live search did not return data because SearXNG's upstream engines were unavailable, blocked, or rate limited. "
+                "This is a provider outage—not proof that the product does not exist. Empty outage responses are not cached."
+            )
+        else:
+            st.info(
+                "The search provider responded normally, but no matching public results were found. "
+                "Try a manufacturer name, exact model number, or broader product description."
+            )
 
     overview_tab, evidence_tab, offers_tab, documents_tab, suppliers_tab, diagnostics_tab = st.tabs([
         "Overview", "Evidence", "Offers", "Documents", "Suppliers", "Diagnostics"
