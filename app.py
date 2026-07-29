@@ -1236,6 +1236,16 @@ def main() -> None:
     metric_five.metric("Manufacturer sources", len(manufacturer_results))
     metric_six.metric("All sources", len(omni_results))
 
+    if run_notes:
+        with st.expander("Research diagnostics", expanded=not bool(omni_results)):
+            for note in unique_keep_order(run_notes):
+                st.write(f"- {note}")
+    if include_broad_web and not omni_results:
+        st.warning(
+            "SearXNG completed but returned no normalized results. v18 retries using the same minimal "
+            "q + format=json request that works in your browser and shows provider diagnostics here."
+        )
+
     _show_omni_results(omni_results)
     _show_product_results(product_results)
     _show_store_results(store_results)

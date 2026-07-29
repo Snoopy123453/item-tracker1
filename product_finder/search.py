@@ -655,32 +655,50 @@ def brave_everywhere_search(
 def searxng_everywhere_search(
     *, query: str, base_url: str, language: str = "en", max_results: int = 20,
 ) -> list[OmniSearchResult]:
-    """Search a configured SearXNG instance via its JSON API."""
+    """Search SearXNG and normalize its JSON results.
+
+    Some SearXNG engines return no results when a generic language code such as ``en`` or
+    safe-search parameters are forced.  The first request therefore mirrors the simplest
+    working browser/API URL (q + format only).  A localized retry is used only when needed.
+    """
     base = clean_text(base_url).rstrip("/")
     if not base:
         return []
-    try:
-        response = requests.get(
-            f"{base}/search",
-            params={"q": clean_text(query), "format": "json", "language": language or "en", "safesearch": 1},
-            headers={"Accept": "application/json", "User-Agent": USER_AGENT},
-            timeout=(10, 60),
-        )
-    except requests.Timeout as exc:
-        raise RuntimeError("SearXNG timed out.") from exc
-    except requests.RequestException as exc:
-        raise RuntimeError("SearXNG could not be reached.") from exc
-    if response.status_code == 403:
-        raise RuntimeError("SearXNG JSON output is disabled on this instance. Enable format: json in settings.yml.")
-    if not response.ok:
-        raise RuntimeError(f"SearXNG returned HTTP {response.status_code}.")
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise RuntimeError("SearXNG returned invalid JSON.") from exc
-    items = (data.get("results") or []) if isinstance(data, dict) else []
-    normalized = _organic_to_omni(query=query, items=items[:max_results], raw_source="SearXNG")
-    return normalized
+
+    endpoint = f"{base}/search"
+    headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
+    attempts = [
+        {"q": clean_text(query), "format": "json"},
+    ]
+    language_value = clean_text(language)
+    if language_value:
+        if language_value.lower() == "en":
+            language_value = "en-US"
+        attempts.append({"q": clean_text(query), "format": "json", "language": language_value, "safesearch": 0})
+
+    last_response = None
+    for params in attempts:
+        try:
+            response = requests.get(endpoint, params=params, headers=headers, timeout=(15, 75))
+        except requests.Timeout as exc:
+            raise RuntimeError("SearXNG timed out. The Render free service may still be waking up.") from exc
+        except requests.RequestException as exc:
+            raise RuntimeError("SearXNG could not be reached.") from exc
+        last_response = response
+        if response.status_code == 403:
+            raise RuntimeError("SearXNG JSON output is disabled on this instance. Enable format: json in settings.yml.")
+        if not response.ok:
+            raise RuntimeError(f"SearXNG returned HTTP {response.status_code}.")
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise RuntimeError("SearXNG returned invalid JSON.") from exc
+        items = (data.get("results") or []) if isinstance(data, dict) else []
+        normalized = _organic_to_omni(query=query, items=items[:max_results], raw_source="SearXNG")
+        if normalized:
+            return normalized
+
+    return []
 
 
 
@@ -861,7 +879,7 @@ def adaptive_searxng_search(
     per_query = max(3, min(8, max_results // max(1, min(len(variants), 8))))
 
     # Search variants concurrently so a deep research run does not become excessively slow.
-    workers = min(6, max(1, len(variants)))
+    workers = min(3, max(1, len(variants)))
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(
@@ -902,7 +920,7 @@ def adaptive_searxng_search(
 
     deep: list[OmniSearchResult] = []
     if deep_variants:
-        with ThreadPoolExecutor(max_workers=min(6, len(deep_variants))) as executor:
+        with ThreadPoolExecutor(max_workers=min(3, len(deep_variants))) as executor:
             futures = {
                 executor.submit(
                     searxng_everywhere_search,
