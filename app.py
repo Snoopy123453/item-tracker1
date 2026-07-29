@@ -47,6 +47,7 @@ from product_finder.procurement_controls import (
 
 
 APP_TITLE = "Product Hunter Pro"
+APP_VERSION = "23.0"
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -420,9 +421,22 @@ def _show_manufacturer_results(results: list[ManufacturerResult]) -> None:
 def _show_omni_results(results: list[OmniSearchResult]) -> None:
     st.subheader("Research results")
     if not results:
-        st.info("No unified results were returned.")
+        st.markdown("""<div class="empty-state"><div style="font-size:1.6rem">⌕</div><h3>No research results yet</h3><div>Run a product research query or broaden the source filters.</div></div>""", unsafe_allow_html=True)
         return
     df = _records_to_df(results)
+    exact_count = int(df.get("exact_model_mentioned", pd.Series(dtype=bool)).fillna(False).astype(bool).sum()) if not df.empty else 0
+    official_count = int(df.get("official_source", pd.Series(dtype=bool)).fillna(False).astype(bool).sum()) if not df.empty else 0
+    doc_count = int(df.get("document_pdf", pd.Series(dtype=bool)).fillna(False).astype(bool).sum()) if not df.empty else 0
+    high_conf = int((pd.to_numeric(df.get("overall_score", pd.Series(dtype=float)), errors="coerce").fillna(0) >= 85).sum()) if not df.empty else 0
+    sm1, sm2, sm3, sm4 = st.columns(4)
+    sm1.metric("Sources", len(df))
+    sm2.metric("Exact-model evidence", exact_count)
+    sm3.metric("Official sources", official_count)
+    sm4.metric("High-confidence", high_conf)
+    if not df.empty and "overall_score" in df.columns:
+        top_idx = pd.to_numeric(df["overall_score"], errors="coerce").fillna(-1).idxmax()
+        top = df.loc[top_idx]
+        st.markdown(f"""<div class="result-highlight"><strong>Top evidence:</strong> {clean_text(str(top.get('title', '')))}<br><span>{clean_text(str(top.get('source_type', 'Source')))} · score {float(top.get('overall_score') or 0):.0f}% · {clean_text(str(top.get('verification_status', 'Review')))}</span></div>""", unsafe_allow_html=True)
     source_options = sorted(x for x in df.get("source_type", pd.Series(dtype=str)).dropna().unique().tolist() if x)
     kb = ProductKnowledgeBase()
     saved_views = kb.list_views()
@@ -981,7 +995,7 @@ def _format_epoch(value: object) -> str:
 
 
 def _render_dashboard_workspace() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v22</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v23</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
     kb = ProductKnowledgeBase()
     stats = kb.stats()
     run_stats = kb.research_run_stats()
@@ -1039,7 +1053,7 @@ def _render_dashboard_workspace() -> None:
 
 
 def _render_knowledge_base_workspace() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Product Intelligence · v22</div><h1>Knowledge Base</h1><p>Review verified products, inspect cached research, export intelligence, and manage stored evidence.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Product Intelligence · v23</div><h1>Knowledge Base</h1><p>Review verified products, inspect cached research, export intelligence, and manage stored evidence.</p></div>""", unsafe_allow_html=True)
     kb = ProductKnowledgeBase()
     stats = kb.stats()
     c1, c2, c3, c4 = st.columns(4)
@@ -1107,37 +1121,94 @@ def _render_knowledge_base_workspace() -> None:
 
 
 def _workspace_css(theme: str, density: str) -> str:
+    """Return a full application theme with reliable text contrast in both modes."""
     dark = theme == "Dark"
-    bg = "#111318" if dark else "#f3f5f8"
-    surface = "#1b1f27" if dark else "#ffffff"
-    surface2 = "#232936" if dark else "#f8fafc"
-    border = "#343b49" if dark else "#d8dde6"
-    text = "#f3f4f6" if dark else "#1f2937"
-    muted = "#aeb6c3" if dark else "#5f6b7a"
-    nav = "#0b0d12" if dark else "#172033"
-    control = "2rem" if density == "Compact" else "2.45rem"
-    pad = ".55rem" if density == "Compact" else ".85rem"
+    if dark:
+        bg, surface, surface2 = "#0b0f17", "#111827", "#172033"
+        border, text, muted = "#2b3648", "#f3f6fb", "#a9b4c5"
+        nav, nav2 = "#080c13", "#0f1724"
+        input_bg, hover, selected = "#101826", "#182236", "#183a5f"
+        success, warning, danger = "#34d399", "#fbbf24", "#fb7185"
+        shadow = "0 1px 2px rgba(0,0,0,.34),0 8px 24px rgba(0,0,0,.18)"
+    else:
+        bg, surface, surface2 = "#f4f6f9", "#ffffff", "#f8fafc"
+        border, text, muted = "#d7dde7", "#172033", "#5f6b7a"
+        nav, nav2 = "#101827", "#172033"
+        input_bg, hover, selected = "#ffffff", "#f2f6fb", "#e7f1fb"
+        success, warning, danger = "#107c10", "#9a6700", "#c42b1c"
+        shadow = "0 1px 2px rgba(15,23,42,.07),0 8px 24px rgba(15,23,42,.05)"
+    pad = ".48rem" if density == "Compact" else ".78rem"
+    control = "2.15rem" if density == "Compact" else "2.55rem"
+    row_height = "31px" if density == "Compact" else "39px"
     return f"""<style>
-    :root{{--ph-bg:{bg};--ph-surface:{surface};--ph-surface2:{surface2};--ph-border:{border};--ph-text:{text};--ph-muted:{muted};--ph-accent:#0f6cbd;--ph-accent2:#2563eb;--ph-nav:{nav};}}
-    .stApp{{background:var(--ph-bg);color:var(--ph-text);}}
-    .block-container{{max-width:1600px;padding-top:.75rem;padding-bottom:3rem;}}
-    h1,h2,h3,h4{{color:var(--ph-text);font-family:Segoe UI Variable,Segoe UI,Inter,Arial,sans-serif;letter-spacing:-.018em;}}
-    [data-testid="stSidebar"]{{background:var(--ph-nav);border-right:1px solid #0a1020;}}
-    [data-testid="stSidebar"] *{{color:#eef2f7;}}
-    [data-testid="stSidebar"] input,[data-testid="stSidebar"] textarea,[data-testid="stSidebar"] [data-baseweb="select"] *{{color:#111827;}}
-    .hero{{padding:1.25rem 1.45rem;border-radius:8px;background:linear-gradient(105deg,#111827 0%,#15385f 58%,#0f6cbd 100%);color:white;margin:.15rem 0 .8rem;box-shadow:0 3px 12px rgba(15,23,42,.18);}}
-    .hero h1{{color:white;margin:0;font-size:1.85rem;font-weight:650}}.hero p{{margin:.35rem 0 0;color:#dbeafe;max-width:1080px}}.hero .eyebrow{{text-transform:uppercase;letter-spacing:.12em;font-size:.68rem;color:#93c5fd;font-weight:700;margin-bottom:.3rem;}}
-    .commandbar{{display:flex;align-items:center;gap:.45rem;background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:6px;padding:.45rem .65rem;margin-bottom:.8rem;box-shadow:0 1px 2px rgba(15,23,42,.05);font-size:.82rem;color:var(--ph-muted)}}
-    .commandbar .pill{{background:#e9f2ff;color:#0f5ea8;border:1px solid #bfd8f2;border-radius:4px;padding:.22rem .5rem;font-weight:650;}}
-    .section-card,div[data-testid="stMetric"]{{background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:6px;box-shadow:0 1px 2px rgba(15,23,42,.045);}}
+    :root{{--ph-bg:{bg};--ph-surface:{surface};--ph-surface2:{surface2};--ph-border:{border};--ph-text:{text};--ph-muted:{muted};--ph-accent:#0f6cbd;--ph-accent-hover:#115ea3;--ph-nav:{nav};--ph-nav2:{nav2};--ph-input:{input_bg};--ph-hover:{hover};--ph-selected:{selected};--ph-success:{success};--ph-warning:{warning};--ph-danger:{danger};--ph-shadow:{shadow};}}
+    html,body,[class*="css"]{{font-family:"Segoe UI Variable","Segoe UI",Inter,Arial,sans-serif;}}
+    .stApp,.stApp>header{{background:var(--ph-bg);color:var(--ph-text);}}
+    .block-container{{max-width:1680px;padding:1rem 1.35rem 4rem;}}
+    .main *{{box-sizing:border-box;}}
+    p,li,span,label,div[data-testid="stMarkdownContainer"],div[data-testid="stCaptionContainer"],.stCaption{{color:var(--ph-text);}}
+    small,.stCaption,[data-testid="stCaptionContainer"],.muted{{color:var(--ph-muted)!important;}}
+    h1,h2,h3,h4,h5,h6{{color:var(--ph-text)!important;font-family:"Segoe UI Variable","Segoe UI",Inter,Arial,sans-serif;letter-spacing:-.018em;}}
+    a{{color:#4da3e6;}}
+    code{{color:var(--ph-text);background:var(--ph-surface2);}}
+
+    [data-testid="stSidebar"]{{background:linear-gradient(180deg,var(--ph-nav),var(--ph-nav2));border-right:1px solid #263247;}}
+    [data-testid="stSidebar"] p,[data-testid="stSidebar"] span,[data-testid="stSidebar"] label,[data-testid="stSidebar"] h1,[data-testid="stSidebar"] h2,[data-testid="stSidebar"] h3{{color:#eef4fb!important;}}
+    [data-testid="stSidebar"] small,[data-testid="stSidebar"] [data-testid="stCaptionContainer"]{{color:#aebbd0!important;}}
+    [data-testid="stSidebar"] hr{{border-color:#324056;}}
+    [data-testid="stSidebar"] [data-baseweb="radio"]>div{{gap:.18rem;}}
+    [data-testid="stSidebar"] [role="radiogroup"] label{{padding:.35rem .45rem;border-radius:5px;}}
+    [data-testid="stSidebar"] [role="radiogroup"] label:hover{{background:rgba(255,255,255,.07);}}
+
+    input,textarea,[data-baseweb="select"]>div,[data-baseweb="base-input"]{{background:var(--ph-input)!important;color:var(--ph-text)!important;border-color:var(--ph-border)!important;}}
+    input::placeholder,textarea::placeholder{{color:var(--ph-muted)!important;opacity:.82;}}
+    [data-baseweb="select"] span,[data-baseweb="popover"] *{{color:var(--ph-text)!important;}}
+    [data-baseweb="popover"],[role="listbox"],[data-baseweb="menu"]{{background:var(--ph-surface)!important;color:var(--ph-text)!important;}}
+    [role="option"]:hover{{background:var(--ph-hover)!important;}}
+    [data-testid="stSidebar"] input,[data-testid="stSidebar"] textarea,[data-testid="stSidebar"] [data-baseweb="select"]>div,[data-testid="stSidebar"] [data-baseweb="select"] span{{color:#111827!important;background:#fff!important;}}
+
+    .app-shell{{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.55rem .75rem;margin:0 0 .7rem;background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:7px;box-shadow:0 1px 2px rgba(15,23,42,.04);}}
+    .app-shell .brand{{display:flex;align-items:center;gap:.55rem;font-weight:700;color:var(--ph-text);}}
+    .app-shell .brandmark{{width:28px;height:28px;border-radius:6px;display:grid;place-items:center;background:linear-gradient(135deg,#0f6cbd,#4f46e5);color:white;font-size:.78rem;box-shadow:inset 0 0 0 1px rgba(255,255,255,.2);}}
+    .app-shell .meta{{font-size:.76rem;color:var(--ph-muted);display:flex;align-items:center;gap:.65rem;}}
+    .status-dot{{width:7px;height:7px;border-radius:999px;background:#2bb673;display:inline-block;box-shadow:0 0 0 3px rgba(43,182,115,.12);}}
+
+    .hero{{padding:1.3rem 1.5rem;border-radius:8px;background:linear-gradient(112deg,#101827 0%,#15385f 55%,#0f6cbd 100%);color:white;margin:.15rem 0 .85rem;box-shadow:0 6px 24px rgba(15,23,42,.16);border:1px solid rgba(255,255,255,.08);}}
+    .hero h1{{color:white!important;margin:0;font-size:1.95rem;font-weight:680}}.hero p{{margin:.38rem 0 0;color:#dbeafe!important;max-width:1120px}}.hero .eyebrow{{text-transform:uppercase;letter-spacing:.12em;font-size:.67rem;color:#9bd2ff!important;font-weight:700;margin-bottom:.3rem;}}
+    .commandbar{{display:flex;align-items:center;gap:.42rem;background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:6px;padding:.45rem .65rem;margin-bottom:.8rem;box-shadow:0 1px 2px rgba(15,23,42,.05);font-size:.82rem;color:var(--ph-muted)}}
+    .commandbar .pill{{background:var(--ph-selected);color:#2f8bd1;border:1px solid rgba(15,108,189,.3);border-radius:4px;padding:.22rem .5rem;font-weight:650;}}
+    .section-card,div[data-testid="stMetric"]{{background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:6px;box-shadow:var(--ph-shadow);}}
     div[data-testid="stMetric"]{{padding:{pad} 1rem;}}
-    div[data-testid="stMetricLabel"]{{font-size:.73rem;color:var(--ph-muted);text-transform:uppercase;letter-spacing:.045em;}}
-    div[data-testid="stMetricValue"]{{font-size:1.5rem;font-weight:650;color:var(--ph-text);}}
-    div.stButton>button,div.stDownloadButton>button{{border-radius:4px;font-weight:600;min-height:{control};}}
-    [data-testid="stDataFrame"]{{background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:5px;overflow:hidden;}}
+    div[data-testid="stMetricLabel"]{{font-size:.72rem;color:var(--ph-muted)!important;text-transform:uppercase;letter-spacing:.05em;}}
+    div[data-testid="stMetricValue"]{{font-size:1.5rem;font-weight:680;color:var(--ph-text)!important;}}
+    div[data-testid="stMetricDelta"]{{color:var(--ph-muted)!important;}}
+
+    div.stButton>button,div.stDownloadButton>button{{border-radius:4px;font-weight:620;min-height:{control};border-color:var(--ph-border);}}
+    div.stButton>button[kind="primary"],div.stDownloadButton>button[kind="primary"]{{background:#0f6cbd;color:#fff;border-color:#0f6cbd;}}
+    div.stButton>button:hover,div.stDownloadButton>button:hover{{border-color:#0f6cbd;color:#0f6cbd;}}
+    div.stButton>button[kind="primary"]:hover,div.stDownloadButton>button[kind="primary"]:hover{{background:#115ea3;color:#fff;}}
+
+    [data-testid="stDataFrame"],[data-testid="stDataEditor"]{{background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:5px;overflow:hidden;box-shadow:0 1px 2px rgba(15,23,42,.035);}}
+    [data-testid="stDataFrame"] *,[data-testid="stDataEditor"] *{{color:var(--ph-text);}}
+    [data-testid="stDataFrame"] canvas,[data-testid="stDataEditor"] canvas{{background:var(--ph-surface);}}
+    [data-testid="stDataFrame"] [role="columnheader"],[data-testid="stDataEditor"] [role="columnheader"]{{background:var(--ph-surface2)!important;color:var(--ph-text)!important;font-weight:650;}}
+    [data-testid="stDataFrame"] [role="gridcell"],[data-testid="stDataEditor"] [role="gridcell"]{{min-height:{row_height};color:var(--ph-text)!important;}}
+
     [data-baseweb="tab-list"]{{gap:.05rem;border-bottom:1px solid var(--ph-border);background:var(--ph-surface);padding:0 .35rem;}}
-    [data-baseweb="tab"]{{border-radius:3px 3px 0 0;padding:.5rem .8rem;font-weight:600;}}
-    .stAlert{{border-radius:5px;}}
+    [data-baseweb="tab"]{{border-radius:3px 3px 0 0;padding:.52rem .82rem;font-weight:620;color:var(--ph-muted)!important;}}
+    [data-baseweb="tab"][aria-selected="true"]{{color:#4da3e6!important;background:var(--ph-selected);}}
+    [data-testid="stExpander"]{{border:1px solid var(--ph-border);border-radius:6px;background:var(--ph-surface);}}
+    [data-testid="stExpander"] summary,[data-testid="stExpander"] summary *{{color:var(--ph-text)!important;}}
+    .stAlert{{border-radius:5px;color:var(--ph-text);}}
+    [data-testid="stToast"]{{background:var(--ph-surface);color:var(--ph-text);border:1px solid var(--ph-border);}}
+
+    .result-highlight{{background:var(--ph-surface);border:1px solid var(--ph-border);border-left:3px solid #0f6cbd;border-radius:6px;padding:.75rem .9rem;margin:.25rem 0 .65rem;}}
+    .result-highlight strong{{color:var(--ph-text);}}.result-highlight span{{color:var(--ph-muted);}}
+    .empty-state{{text-align:center;padding:2rem 1rem;border:1px dashed var(--ph-border);border-radius:8px;background:var(--ph-surface);color:var(--ph-muted);}}
+    .empty-state h3{{margin:.25rem 0;color:var(--ph-text)!important;}}
+    .kbd{{font-size:.7rem;border:1px solid var(--ph-border);border-bottom-width:2px;border-radius:4px;padding:.08rem .32rem;background:var(--ph-surface2);color:var(--ph-text);}}
+
+    @media(max-width:900px){{.block-container{{padding:.65rem .7rem 3rem}}.hero{{padding:1rem}}.hero h1{{font-size:1.55rem}}.app-shell .meta{{display:none}}}}
     </style>"""
 
 def main() -> None:
@@ -1150,9 +1221,14 @@ def main() -> None:
     if not _password_gate(config):
         return
 
+    st.markdown(
+        f"""<div class="app-shell"><div class="brand"><div class="brandmark">PH</div><span>Product Hunter Pro</span></div><div class="meta"><span><span class="status-dot"></span>&nbsp; Workspace online</span><span>v{APP_VERSION}</span><span class="kbd">Ctrl K</span> Quick navigation</div></div>""",
+        unsafe_allow_html=True,
+    )
+
     with st.sidebar:
         st.markdown("### PRODUCT HUNTER")
-        st.caption("Procurement Intelligence · v21")
+        st.caption("Procurement Intelligence Platform · v23")
         app_mode = st.radio("Workspace", ["Dashboard", "Product Search", "Knowledge Base", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
         with st.expander("Appearance"):
             theme = st.selectbox("Theme", ["Light", "Dark"], index=0 if st.session_state["ui_theme"] == "Light" else 1)
@@ -1160,6 +1236,11 @@ def main() -> None:
             if theme != st.session_state["ui_theme"] or density != st.session_state["ui_density"]:
                 st.session_state["ui_theme"] = theme
                 st.session_state["ui_density"] = density
+                st.rerun()
+        with st.expander("Quick navigation"):
+            quick_target = st.selectbox("Go to", ["Dashboard", "Product Search", "Knowledge Base", "Project Intelligence", "Spec Sheet Compare", "Request Quotes", "Purchase Tracker"], key="quick_nav_target")
+            if st.button("Open workspace", use_container_width=True, key="quick_nav_open"):
+                st.session_state["workspace_mode"] = quick_target
                 st.rerun()
 
     if app_mode == "Dashboard":
@@ -1190,7 +1271,7 @@ def main() -> None:
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
-    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v21</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Research</span><span>Evidence</span><span>Products</span><span>Documents</span><span>Suppliers</span><span>RFQ</span><span>Export</span></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v23</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Research</span><span>Evidence</span><span>Products</span><span>Documents</span><span>Suppliers</span><span>RFQ</span><span>Export</span></div>""", unsafe_allow_html=True)
 
     command_cols = st.columns([1, 1, 1, 1, 5])
     if command_cols[0].button("New research", use_container_width=True):
