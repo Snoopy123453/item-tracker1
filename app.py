@@ -424,10 +424,21 @@ def _show_omni_results(results: list[OmniSearchResult]) -> None:
         return
     df = _records_to_df(results)
     source_options = sorted(x for x in df.get("source_type", pd.Series(dtype=str)).dropna().unique().tolist() if x)
-    c1, c2, c3 = st.columns([2, 1, 1])
-    selected = c1.multiselect("Filter source types", source_options, default=source_options, key="omni_source_filter")
-    exact_only = c2.checkbox("Exact model only", value=False, key="omni_exact_only")
-    official_only = c3.checkbox("Official only", value=False, key="omni_official_only")
+    kb = ProductKnowledgeBase()
+    saved_views = kb.list_views()
+    preset_names = ["Current filters"] + [v["view_name"] for v in saved_views]
+    preset = st.selectbox("Saved view", preset_names, key="omni_saved_view")
+    preset_filters = next((v.get("filters", {}) for v in saved_views if v["view_name"] == preset), {})
+
+    c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+    selected = c1.multiselect(
+        "Source types", source_options,
+        default=[x for x in preset_filters.get("source_types", source_options) if x in source_options] or source_options,
+        key=f"omni_source_filter_{preset}",
+    )
+    exact_only = c2.checkbox("Exact model", value=bool(preset_filters.get("exact_only", False)), key=f"omni_exact_only_{preset}")
+    official_only = c3.checkbox("Official", value=bool(preset_filters.get("official_only", False)), key=f"omni_official_only_{preset}")
+    min_score = c4.number_input("Min score", min_value=0, max_value=100, value=int(preset_filters.get("min_score", 0)), step=5, key=f"omni_min_score_{preset}")
     view = df.copy()
     if selected:
         view = view[view["source_type"].isin(selected)]
@@ -435,6 +446,27 @@ def _show_omni_results(results: list[OmniSearchResult]) -> None:
         view = view[view["exact_model_mentioned"] == True]  # noqa: E712
     if official_only and "official_source" in view.columns:
         view = view[view["official_source"] == True]  # noqa: E712
+    if "overall_score" in view.columns:
+        view = view[pd.to_numeric(view["overall_score"], errors="coerce").fillna(0) >= min_score]
+
+    save_col, export_col, count_col = st.columns([1, 1, 2])
+    with save_col:
+        with st.popover("Save view"):
+            view_name = st.text_input("View name", key="omni_new_view_name")
+            if st.button("Save filters", key="omni_save_view_button", use_container_width=True):
+                kb.save_view(view_name, {"source_types": selected, "exact_only": exact_only, "official_only": official_only, "min_score": min_score})
+                st.success("Saved view.")
+                st.rerun()
+    with export_col:
+        st.download_button(
+            "Export filtered CSV",
+            data=view.to_csv(index=False).encode("utf-8-sig"),
+            file_name="Product_Hunter_Filtered_Research.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    count_col.caption(f"Showing {len(view)} of {len(df)} normalized sources")
+
     cols = ["rank", "overall_score", "verification_status", "title", "source_name", "source_type", "result_kind", "price", "delivery", "official_source", "authorized_distributor", "exact_model_mentioned", "legacy_or_discontinued", "source_reliability", "evidence", "link", "query"]
     st.dataframe(view[[c for c in cols if c in view.columns]], use_container_width=True, hide_index=True, column_config={
         "overall_score": st.column_config.ProgressColumn("Overall", min_value=0, max_value=100, format="%.1f%%"),
@@ -444,7 +476,7 @@ def _show_omni_results(results: list[OmniSearchResult]) -> None:
         "exact_model_mentioned": st.column_config.CheckboxColumn("Exact model"),
         "legacy_or_discontinued": st.column_config.CheckboxColumn("Legacy"),
         "link": st.column_config.LinkColumn("Open source", display_text="Open"),
-    })
+    }, height=520)
 
 
 def _render_purchase_tracker() -> None:
@@ -948,8 +980,66 @@ def _format_epoch(value: object) -> str:
         return ""
 
 
+def _render_dashboard_workspace() -> None:
+    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v22</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
+    kb = ProductKnowledgeBase()
+    stats = kb.stats()
+    run_stats = kb.research_run_stats()
+    verified = kb.list_verified_products(limit=1000)
+    runs = kb.list_research_runs(limit=100)
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Reviewed products", stats.get("verified_products", 0))
+    k2.metric("Research runs", run_stats.get("runs", 0))
+    k3.metric("Sources collected", run_stats.get("results", 0))
+    k4.metric("Cache hit rate", f"{(100 * run_stats.get('cache_hits', 0) / max(1, run_stats.get('runs', 0))):.0f}%")
+    k5.metric("Avg. research time", f"{run_stats.get('avg_duration', 0):.1f}s")
+
+    left, right = st.columns([1.45, 1])
+    with left:
+        st.markdown("### Recent research activity")
+        if runs:
+            run_df = pd.DataFrame([{
+                "Query": r.get("query", ""), "Depth": r.get("depth", ""),
+                "Results": r.get("result_count", 0), "Warnings": r.get("warning_count", 0),
+                "Duration (s)": round(float(r.get("duration_seconds", 0)), 2),
+                "Cache": bool(r.get("cache_hit", 0)), "Status": r.get("status", ""),
+                "Time": _format_epoch(r.get("created_at")),
+            } for r in runs])
+            st.dataframe(run_df, use_container_width=True, hide_index=True, height=390, column_config={
+                "Cache": st.column_config.CheckboxColumn("Cache"),
+                "Results": st.column_config.NumberColumn("Results"),
+                "Warnings": st.column_config.NumberColumn("Warnings"),
+            })
+            chosen = st.selectbox("Prepare a recent query", run_df["Query"].drop_duplicates().tolist(), key="dashboard_recent_query")
+            if st.button("Open in Product Search", type="primary", use_container_width=True):
+                st.session_state["project_search_queries"] = chosen
+                st.session_state["workspace_mode"] = "Product Search"
+                st.rerun()
+        else:
+            st.info("Research activity will appear here after the first product search.")
+    with right:
+        st.markdown("### Review status")
+        if verified:
+            status_df = pd.DataFrame(verified)
+            counts = status_df.groupby("status").size().rename("Products")
+            st.bar_chart(counts)
+            st.dataframe(status_df[["manufacturer", "model", "title", "status"]].head(12), use_container_width=True, hide_index=True, height=270)
+        else:
+            st.info("No reviewed products yet. Save decisions from the Evidence workspace.")
+        st.markdown("### System health")
+        warning_rate = run_stats.get("warnings", 0) / max(1, run_stats.get("runs", 0))
+        if warning_rate == 0:
+            st.success("No provider warnings recorded.")
+        elif warning_rate < 1:
+            st.warning("Some research runs recorded provider warnings. Review Diagnostics when results look incomplete.")
+        else:
+            st.error("Frequent provider warnings detected. Check SearXNG availability and Render logs.")
+        st.caption(f"Saved views: {stats.get('saved_views', 0)} · Cached searches: {stats.get('cached_research', 0)}")
+
+
 def _render_knowledge_base_workspace() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Product Intelligence · v21</div><h1>Knowledge Base</h1><p>Review verified products, inspect cached research, export intelligence, and manage stored evidence.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Product Intelligence · v22</div><h1>Knowledge Base</h1><p>Review verified products, inspect cached research, export intelligence, and manage stored evidence.</p></div>""", unsafe_allow_html=True)
     kb = ProductKnowledgeBase()
     stats = kb.stats()
     c1, c2, c3, c4 = st.columns(4)
@@ -1063,7 +1153,7 @@ def main() -> None:
     with st.sidebar:
         st.markdown("### PRODUCT HUNTER")
         st.caption("Procurement Intelligence · v21")
-        app_mode = st.radio("Workspace", ["Product Search", "Knowledge Base", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
+        app_mode = st.radio("Workspace", ["Dashboard", "Product Search", "Knowledge Base", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
         with st.expander("Appearance"):
             theme = st.selectbox("Theme", ["Light", "Dark"], index=0 if st.session_state["ui_theme"] == "Light" else 1)
             density = st.selectbox("Table density", ["Compact", "Comfortable"], index=0 if st.session_state["ui_density"] == "Compact" else 1)
@@ -1072,6 +1162,9 @@ def main() -> None:
                 st.session_state["ui_density"] = density
                 st.rerun()
 
+    if app_mode == "Dashboard":
+        _render_dashboard_workspace()
+        return
     if app_mode == "Knowledge Base":
         _render_knowledge_base_workspace()
         return
@@ -1492,6 +1585,42 @@ def main() -> None:
                 st.write(f"**Exact model mentioned:** {'Yes' if selected.exact_model_mentioned else 'No'}")
                 st.write(f"**Official source:** {'Yes' if selected.official_source else 'No'}")
             st.info(selected.evidence or "No detailed evidence explanation was generated for this source.")
+            with st.expander("Compare multiple sources", expanded=False):
+                compare_ids = st.multiselect(
+                    "Choose up to three sources",
+                    options=list(range(len(omni_results))),
+                    default=[selected_index],
+                    max_selections=3,
+                    format_func=lambda i: f"{omni_results[i].overall_score:.0f}% · {omni_results[i].title[:70]}",
+                    key="v22_compare_sources",
+                )
+                if compare_ids:
+                    comparison = pd.DataFrame([{
+                        "Title": omni_results[i].title,
+                        "Overall": omni_results[i].overall_score,
+                        "Trust": omni_results[i].source_reliability,
+                        "Match": omni_results[i].match_score,
+                        "Source type": omni_results[i].source_type,
+                        "Official": omni_results[i].official_source,
+                        "Exact model": omni_results[i].exact_model_mentioned,
+                        "Verification": omni_results[i].verification_status,
+                        "Link": omni_results[i].link,
+                    } for i in compare_ids])
+                    st.dataframe(comparison, use_container_width=True, hide_index=True, column_config={
+                        "Overall": st.column_config.ProgressColumn("Overall", min_value=0, max_value=100),
+                        "Trust": st.column_config.ProgressColumn("Trust", min_value=0, max_value=100),
+                        "Match": st.column_config.ProgressColumn("Match", min_value=0, max_value=100),
+                        "Official": st.column_config.CheckboxColumn("Official"),
+                        "Exact model": st.column_config.CheckboxColumn("Exact model"),
+                        "Link": st.column_config.LinkColumn("Source", display_text="Open"),
+                    })
+                    st.download_button(
+                        "Export comparison JSON",
+                        data=json.dumps(comparison.to_dict("records"), indent=2).encode("utf-8"),
+                        file_name="Product_Hunter_Evidence_Comparison.json",
+                        mime="application/json",
+                        use_container_width=True,
+                    )
             with st.expander("Save review decision", expanded=False):
                 c1, c2 = st.columns(2)
                 manufacturer = c1.text_input("Manufacturer", value=selected.source_name if selected.official_source else "", key="v20_verified_manufacturer")

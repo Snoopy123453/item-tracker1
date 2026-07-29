@@ -1,4 +1,4 @@
-# Product Hunter Pro v21
+# Product Hunter Pro v22
 
 
 ## v17 AI Procurement Research Engine
@@ -152,3 +152,8 @@ Use a private SearXNG instance as the primary provider. Brave is not required. T
 ## v19 professional workspace
 
 Version 19 adds a professional tabbed research workspace and routes normalized SearXNG results into focused offer, document, manufacturer, and supplier views.
+
+
+## v22 Big Patch
+
+Adds a procurement dashboard, research telemetry, saved result views, filtered CSV exports, and side-by-side evidence comparison.
