@@ -26,6 +26,7 @@ from product_finder.search import (
 from product_finder.spreadsheet import create_product_workbook_bytes
 from product_finder.purchase_tracker import extract_purchase_candidates, create_purchase_tracker_bytes
 from product_finder.rfq_builder import extract_rfq_items, build_rfq_email, create_rfq_workbook
+from product_finder.quote_center import parse_quote_file, quote_dataframe, vendor_summary, award_recommendation, create_bid_tab_workbook
 from product_finder.utils import clean_text, unique_keep_order
 from product_finder.vision import analyze_uploaded_image
 from product_finder.exact_image_match import build_visual_fingerprint, visually_verify_candidates
@@ -51,7 +52,7 @@ from product_finder.procurement_controls import (
 
 
 APP_TITLE = "Product Hunter Pro"
-APP_VERSION = "29.0"
+APP_VERSION = "31.0"
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -1001,6 +1002,64 @@ def _render_request_quotes() -> None:
     st.download_button("Download RFQ workbook",data=data,file_name=filename,mime=EXCEL_MIME,use_container_width=True)
 
 
+def _render_quote_center() -> None:
+    st.markdown("""<div class="hero"><div class="eyebrow">Commercial Procurement Workspace · v31</div><h1>RFQ & Quote Center</h1><p>Create vendor-ready RFQs, import competing quotes, compare landed cost and lead time, flag substitutions, and generate a professional bid tab from one workspace.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="enterprise-ribbon"><div class="group"><span class="cmd active">RFQ Home</span><span class="cmd">Create RFQ</span><span class="cmd">Import Quotes</span></div><div class="group"><span class="cmd">Compare</span><span class="cmd">Award Review</span><span class="cmd">Bid Tab</span></div><div class="group"><span class="cmd">Export</span><span class="cmd">Audit</span></div></div>""", unsafe_allow_html=True)
+    create_tab, compare_tab, award_tab = st.tabs(["Create RFQ", "Quote Comparison", "Award Recommendation"])
+    with create_tab:
+        _render_request_quotes()
+    with compare_tab:
+        st.subheader("Import vendor quotes")
+        project_name = st.text_input("Project name for bid tab", key="quote_center_project")
+        files = st.file_uploader("Upload vendor quote workbooks or CSV files", type=["xlsx", "xlsm", "csv"], accept_multiple_files=True, key="quote_center_files")
+        lines = []
+        for file in files or []:
+            try:
+                lines.extend(parse_quote_file(file.getvalue(), file.name))
+            except Exception as exc:
+                st.error(f"Could not import {file.name}: {exc}")
+        if not lines:
+            st.markdown('<div class="empty-state"><h3>No vendor quotes imported</h3><p>Upload two or more CSV/XLSX quote files. The importer recognizes common vendor, model, quantity, price, freight, tax, lead-time, stock, and substitution columns.</p></div>', unsafe_allow_html=True)
+        else:
+            df = quote_dataframe(lines)
+            summary = vendor_summary(df)
+            rec = award_recommendation(summary)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Vendors", int(summary["vendor"].nunique()))
+            c2.metric("Quote lines", len(df))
+            c3.metric("Lowest total", f"${summary['quoted_total'].min():,.2f}")
+            c4.metric("Best coverage", f"{summary['coverage_score'].max():.1f}%")
+            st.markdown("### Vendor summary")
+            st.dataframe(summary, use_container_width=True, hide_index=True, column_config={
+                "quoted_total": st.column_config.NumberColumn("Quoted total", format="$%.2f"),
+                "coverage_score": st.column_config.ProgressColumn("Coverage", min_value=0, max_value=100, format="%.1f%%"),
+                "avg_lead_days": st.column_config.NumberColumn("Avg lead days", format="%.1f"),
+            })
+            st.markdown("### Normalized quote lines")
+            st.dataframe(df, use_container_width=True, hide_index=True, column_config={
+                "unit_price": st.column_config.NumberColumn("Unit price", format="$%.2f"),
+                "landed_total": st.column_config.NumberColumn("Landed total", format="$%.2f"),
+                "extended_price": st.column_config.NumberColumn("Extended", format="$%.2f"),
+            })
+            bid = create_bid_tab_workbook(lines, project_name)
+            st.download_button("Download professional bid tab", bid, file_name=(clean_text(project_name).replace(" ", "_") or "Project") + "_Bid_Tab.xlsx", mime=EXCEL_MIME, use_container_width=True, type="primary")
+            st.session_state["quote_center_recommendation"] = rec
+            st.session_state["quote_center_summary"] = summary.to_dict("records")
+    with award_tab:
+        rec = st.session_state.get("quote_center_recommendation") or {}
+        if not rec:
+            st.info("Import vendor quotes in the Quote Comparison tab to generate an award recommendation.")
+        else:
+            vendor = rec.get("vendor", "")
+            score = float(rec.get("score", 0))
+            total = float(rec.get("quoted_total", 0))
+            coverage = float(rec.get("coverage_score", 0))
+            lead = float(rec.get("avg_lead_days", 0))
+            st.markdown(f'<div class="award-card"><strong>Recommended vendor: {vendor}</strong><br>Decision score: {score:.1f}/100 · Quoted total: ${total:,.2f} · Coverage: {coverage:.1f}% · Average lead: {lead:.1f} days</div>', unsafe_allow_html=True)
+            st.caption("This is a decision-support recommendation. Review scope, exclusions, substitutions, taxes, freight, commercial terms, and technical compliance before award.")
+            st.dataframe(pd.DataFrame(st.session_state.get("quote_center_summary", [])), use_container_width=True, hide_index=True)
+
+
 def _format_epoch(value: object) -> str:
     try:
         return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(value)))
@@ -1009,7 +1068,7 @@ def _format_epoch(value: object) -> str:
 
 
 def _render_dashboard_workspace() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v30</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v31</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
     kb = ProductKnowledgeBase()
     stats = kb.stats()
     run_stats = kb.research_run_stats()
@@ -1485,6 +1544,9 @@ def _workspace_css(theme: str, density: str, text_size: str = "Standard") -> str
     .resource-card *{{color:var(--ph-text)!important;}}.resource-card strong{{color:var(--ph-text-strong)!important;}}
     .contrast-note{{display:inline-flex;align-items:center;gap:.35rem;padding:.22rem .5rem;border-radius:999px;background:var(--ph-success-bg);color:var(--ph-success)!important;border:1px solid color-mix(in srgb,var(--ph-success) 35%,transparent);font-size:.74rem;font-weight:700;}}
 
+    .enterprise-ribbon{display:flex;gap:.25rem;align-items:center;padding:.35rem .45rem;background:var(--ph-surface);border:1px solid var(--ph-border);border-radius:6px;margin-bottom:.65rem;overflow-x:auto;box-shadow:var(--ph-shadow);}
+    .enterprise-ribbon .group{display:flex;gap:.18rem;padding-right:.45rem;margin-right:.25rem;border-right:1px solid var(--ph-border);}
+    .enterprise-ribbon .group:last-child{border-right:0}.enterprise-ribbon .cmd{padding:.42rem .62rem;border-radius:4px;color:var(--ph-text)!important;font-size:.78rem;font-weight:650;white-space:nowrap}.enterprise-ribbon .cmd.active{background:var(--ph-selected);color:var(--ph-link)!important}.award-card{padding:1rem;border:1px solid var(--ph-border);border-left:4px solid var(--ph-success);background:var(--ph-success-bg);border-radius:6px}.award-card *{color:var(--ph-text)!important}.award-card strong{color:var(--ph-text-strong)!important}
     @media(max-width:900px){{.block-container{{padding:.65rem .7rem 3rem}}.hero{{padding:1rem}}.hero h1{{font-size:1.55rem}}.app-shell .meta{{display:none}}.commandbar{{font-size:.78rem}}}}
     @media(prefers-reduced-motion:reduce){{*,*::before,*::after{{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important;}}}}
     </style>'''
@@ -1507,8 +1569,8 @@ def _main_impl() -> None:
 
     with st.sidebar:
         st.markdown("### PRODUCT HUNTER")
-        st.caption("Procurement Intelligence Platform · v30")
-        app_mode = st.radio("Workspace", ["Dashboard", "Product Search", "Product Workspace", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
+        st.caption("Procurement Intelligence Platform · v31")
+        app_mode = st.radio("Workspace", ["Dashboard", "Product Search", "Product Workspace", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "RFQ & Quote Center", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
         with st.expander("Appearance"):
             theme = st.selectbox("Theme", ["Light", "Dark"], index=0 if st.session_state["ui_theme"] == "Light" else 1)
             density = st.selectbox("Table density", ["Compact", "Comfortable"], index=0 if st.session_state["ui_density"] == "Compact" else 1)
@@ -1520,7 +1582,7 @@ def _main_impl() -> None:
                 st.session_state["ui_text_size"] = text_size
                 st.rerun()
         with st.expander("Quick navigation"):
-            quick_target = st.selectbox("Go to", ["Dashboard", "Product Search", "Product Workspace", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "Request Quotes", "Purchase Tracker"], key="quick_nav_target")
+            quick_target = st.selectbox("Go to", ["Dashboard", "Product Search", "Product Workspace", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "RFQ & Quote Center", "Request Quotes", "Purchase Tracker"], key="quick_nav_target")
             if st.button("Open workspace", use_container_width=True, key="quick_nav_open"):
                 st.session_state["workspace_mode"] = quick_target
                 st.rerun()
@@ -1536,6 +1598,9 @@ def _main_impl() -> None:
         return
     if app_mode == "System Center":
         _render_system_center(config)
+        return
+    if app_mode == "RFQ & Quote Center":
+        _render_quote_center()
         return
     if app_mode == "Request Quotes":
         _render_request_quotes()
@@ -1559,7 +1624,7 @@ def _main_impl() -> None:
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
-    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v30</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Research</span><span>Evidence</span><span>Products</span><span>Documents</span><span>Suppliers</span><span>RFQ</span><span>Export</span></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v31</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Home</span><span>Research</span><span>Products</span><span>Documents</span><span>Vendors</span><span>RFQ & Quotes</span><span>Reports</span><span>Settings</span></div>""", unsafe_allow_html=True)
 
     command_cols = st.columns([1, 1, 1, 1, 5])
     if command_cols[0].button("New research", use_container_width=True):
