@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
@@ -822,58 +823,122 @@ def discover_manufacturer_domains(*, query: str, results: list[OmniSearchResult]
     return ranked[:max_domains]
 
 
+def build_procurement_query_variants(query: str, *, research_depth: str = "standard") -> list[str]:
+    """Build focused searches for procurement research instead of one generic query."""
+    q = clean_text(query)
+    quoted = f'"{q}"'
+    base = [
+        q,
+        quoted,
+        f'{quoted} manufacturer official product',
+        f'{quoted} (spec sheet OR submittal OR technical data) filetype:pdf',
+        f'{quoted} (installation manual OR instructions OR O&M) filetype:pdf',
+        f'{quoted} (supplier OR distributor OR price OR buy)',
+        f'{quoted} (quote OR RFQ OR lead time OR availability OR in stock)',
+        f'{quoted} (discontinued OR obsolete OR superseded OR replacement OR legacy)',
+    ]
+    if research_depth == "deep":
+        base.extend([
+            f'{quoted} (warranty OR parts diagram OR replacement parts) filetype:pdf',
+            f'{quoted} (CAD OR BIM OR Revit OR DWG)',
+            f'{quoted} authorized distributor',
+            f'{quoted} catalog filetype:pdf',
+            f'{quoted} dimensions material finish connections',
+            f'{quoted} site:archive.org OR site:webcache.googleusercontent.com',
+        ])
+    return unique_keep_order(base)
+
+
 def adaptive_searxng_search(
-    *, query: str, base_url: str, language: str = "en", max_results: int = 30, max_domains: int = 3,
+    *, query: str, base_url: str, language: str = "en", max_results: int = 30,
+    max_domains: int = 3, research_depth: str = "standard",
 ) -> tuple[list[OmniSearchResult], list[str], list[tuple[str, float, str]]]:
-    """Discover unknown manufacturers, then deep-search their likely official domains."""
+    """Run parallel procurement research, discover manufacturers, then deep-search official domains."""
     q = clean_text(query)
     notes: list[str] = []
-    broad_variants = [
-        q,
-        f'"{q}" product manufacturer',
-        f'"{q}" (spec sheet OR submittal OR technical data OR installation manual) filetype:pdf',
-        f'"{q}" (supplier OR distributor OR price OR quote OR lead time)',
-        f'"{q}" (discontinued OR obsolete OR superseded OR replacement OR legacy)',
-    ]
+    variants = build_procurement_query_variants(q, research_depth=research_depth)
     broad: list[OmniSearchResult] = []
-    per_query = max(4, min(9, max_results // 4))
-    for variant in broad_variants:
-        try:
-            broad.extend(searxng_everywhere_search(query=variant, base_url=base_url, language=language, max_results=per_query))
-        except Exception as exc:
-            notes.append(f"searxng: discovery query failed ({variant}): {exc}")
+    per_query = max(3, min(8, max_results // max(1, min(len(variants), 8))))
+
+    # Search variants concurrently so a deep research run does not become excessively slow.
+    workers = min(6, max(1, len(variants)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(
+                searxng_everywhere_search,
+                query=variant,
+                base_url=base_url,
+                language=language,
+                max_results=per_query,
+            ): variant
+            for variant in variants
+        }
+        for future in as_completed(futures):
+            variant = futures[future]
+            try:
+                broad.extend(future.result())
+            except Exception as exc:
+                notes.append(f"searxng: research query failed ({variant}): {exc}")
+
     for item in broad:
         item.query = q
     discovered = discover_manufacturer_domains(query=q, results=broad, max_domains=max_domains)
 
-    deep: list[OmniSearchResult] = []
+    deep_variants: list[tuple[str, str, float, str]] = []
     for domain, confidence, evidence in discovered:
-        variants = [
+        domain_queries = [
+            f'site:{domain} {q}',
             f'site:{domain} "{q}"',
             f'site:{domain} "{q}" (spec OR submittal OR manual OR technical OR catalog)',
             f'site:{domain} "{q}" filetype:pdf',
         ]
-        for variant in variants:
-            try:
-                found = searxng_everywhere_search(query=variant, base_url=base_url, language=language, max_results=6)
-                for item in found:
-                    item.query = q
-                    item.official_source = True
-                    item.source_type = "Discovered manufacturer document" if item.document_pdf else "Discovered manufacturer source"
-                    item.source_reliability = max(item.source_reliability, min(96.0, 72.0 + confidence * 0.22))
-                    item.overall_score = round(item.match_score * 0.62 + item.source_reliability * 0.38, 1)
-                    item.evidence = "; ".join(x for x in [item.evidence, f"Dynamic domain discovery: {evidence}"] if x)
-                    item.verification_status = "Official-domain candidate — verify" if not item.exact_model_mentioned else "Exact model on discovered manufacturer domain"
-                deep.extend(found)
-            except Exception as exc:
-                notes.append(f"searxng: manufacturer deep search failed ({domain}): {exc}")
+        if research_depth == "deep":
+            domain_queries.extend([
+                f'site:{domain} "{q}" (warranty OR parts OR CAD OR BIM OR Revit)',
+                f'site:{domain} "{q}" (replacement OR discontinued OR superseded)',
+            ])
+        for variant in unique_keep_order(domain_queries):
+            deep_variants.append((variant, domain, confidence, evidence))
+
+    deep: list[OmniSearchResult] = []
+    if deep_variants:
+        with ThreadPoolExecutor(max_workers=min(6, len(deep_variants))) as executor:
+            futures = {
+                executor.submit(
+                    searxng_everywhere_search,
+                    query=variant,
+                    base_url=base_url,
+                    language=language,
+                    max_results=6,
+                ): (variant, domain, confidence, evidence)
+                for variant, domain, confidence, evidence in deep_variants
+            }
+            for future in as_completed(futures):
+                variant, domain, confidence, evidence = futures[future]
+                try:
+                    found = future.result()
+                    for item in found:
+                        item.query = q
+                        item.official_source = True
+                        item.source_type = "Discovered manufacturer document" if item.document_pdf else "Discovered manufacturer source"
+                        item.source_reliability = max(item.source_reliability, min(97.0, 74.0 + confidence * 0.22))
+                        item.overall_score = round(item.match_score * 0.62 + item.source_reliability * 0.38, 1)
+                        item.evidence = "; ".join(x for x in [item.evidence, f"Dynamic domain discovery: {evidence}"] if x)
+                        item.verification_status = "Official-domain candidate — verify" if not item.exact_model_mentioned else "Exact model on discovered manufacturer domain"
+                    deep.extend(found)
+                except Exception as exc:
+                    notes.append(f"searxng: manufacturer deep search failed ({domain}): {exc}")
+
     merged = rank_omni_results(broad + deep)[:max_results]
+    notes.append(
+        f"Research engine ran {len(variants)} broad queries and {len(deep_variants)} manufacturer-domain queries."
+    )
     return merged, notes, discovered
 
 def modular_everywhere_search(
     *, query: str, searxng_url: str = "", brave_api_key: str = "", serpapi_api_key: str = "",
     provider_order: str = "searxng,serpapi", country_code: str = "us", language: str = "en",
-    max_results: int = 20,
+    max_results: int = 20, research_depth: str = "standard",
 ) -> tuple[list[OmniSearchResult], list[str]]:
     """Run enabled providers in priority order, merge, deduplicate, and report provider errors.
 
@@ -888,7 +953,7 @@ def modular_everywhere_search(
         try:
             if provider == "searxng" and searxng_url:
                 provider_results, provider_notes, discovered = adaptive_searxng_search(
-                    query=query, base_url=searxng_url, language=language, max_results=max_results
+                    query=query, base_url=searxng_url, language=language, max_results=max_results, research_depth=research_depth
                 )
                 results.extend(provider_results)
                 notes.extend(provider_notes)

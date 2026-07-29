@@ -1,3 +1,7 @@
+
+## v17 AI Procurement Research Engine
+
+Product Search now runs multiple focused SearXNG searches in parallel, discovers likely manufacturer domains, deep-searches those domains, and organizes evidence for official pages, technical PDFs, distributors, retailers, lead times, and legacy products. Select **Standard** or **Deep** research in the sidebar.
 # Product Hunter Pro v12 — OmniSearch Pro v8
 
 A browser-based product sourcing, project procurement, purchasing, and control application built with Streamlit.

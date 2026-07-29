@@ -911,7 +911,7 @@ def main() -> None:
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
-    st.markdown("""<div class="hero"><h1>Product Hunter Pro</h1><p>One search discovers unknown manufacturers, verifies likely official domains, and searches catalogs, distributors, retailers, technical documents, local suppliers, and legacy sources.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><h1>Product Hunter Pro</h1><p>AI procurement research that discovers unknown manufacturers, searches official domains, technical documents, distributors, retailers, lead-time sources, and legacy products in one run.</p></div>""", unsafe_allow_html=True)
 
     serpapi_api_key, openai_api_key, brave_api_key, searxng_url = _resolve_api_keys(config)
 
@@ -919,7 +919,8 @@ def main() -> None:
         st.divider()
         st.header("Search settings")
         location = st.text_input("City, state, or ZIP", value=config.default_location)
-        search_everywhere = st.checkbox("Search Everywhere (OmniSearch)", value=True, help="Searches manufacturers, catalogs, distributors, retailers, technical documents, local suppliers, and legacy/discontinued pages in one run.")
+        search_everywhere = st.checkbox("Research Everywhere", value=True, help="Runs multiple focused searches for official manufacturer pages, documents, pricing, lead times, distributors, local suppliers, and legacy products.")
+        research_depth = st.selectbox("Research depth", ["Standard", "Deep"], index=0, help="Deep research runs more document, lifecycle, CAD/BIM, warranty, and manufacturer-domain searches. It may take longer.")
         with st.expander("Source controls"):
             include_online = st.checkbox("Shopping and shipping listings", value=True)
             include_nearby = st.checkbox("Nearby supplier leads", value=True)
@@ -982,7 +983,7 @@ def main() -> None:
                 height=110,
                 max_chars=1000,
             )
-        submitted = st.form_submit_button("Find products and build spreadsheet", type="primary", use_container_width=True)
+        submitted = st.form_submit_button("Research products and build procurement workbook", type="primary", use_container_width=True)
 
     if not submitted:
         st.info("Add a text search, image upload, or public image URL, then start the search.")
@@ -1106,7 +1107,7 @@ def main() -> None:
     steps_per_job = (int(include_online and bool(serpapi_api_key)) + int(include_nearby and bool(serpapi_api_key)) + int(include_specs and bool(serpapi_api_key)) + int(include_manufacturer and bool(serpapi_api_key)) + int(include_broad_web))
     total_steps = len(search_jobs) * steps_per_job
     completed = 0
-    progress = st.progress(0, text="Searching retailers...")
+    progress = st.progress(0, text="Researching products across all enabled sources...")
 
     for query, input_source in search_jobs:
         if include_online and serpapi_api_key:
@@ -1190,6 +1191,7 @@ def main() -> None:
                     query=query, searxng_url=searxng_url, brave_api_key=brave_api_key,
                     serpapi_api_key=serpapi_api_key, provider_order=config.search_provider_order,
                     country_code=country_code, language=language, max_results=max_omni_results,
+                    research_depth=research_depth.lower(),
                 )
                 omni_results.extend(provider_results)
                 run_notes.extend(f"OmniSearch provider warning for '{query}': {note}" for note in provider_notes)
@@ -1198,7 +1200,7 @@ def main() -> None:
                 st.warning(message)
                 run_notes.append(message)
             completed += 1
-            progress.progress(completed / total_steps, text=f"Searched distributors, web, and legacy sources for: {query}")
+            progress.progress(completed / total_steps, text=f"Completed procurement research for: {query}")
 
     product_results = rank_product_matches(_dedupe_products(product_results))
     store_results = _dedupe_stores(store_results)
@@ -1216,7 +1218,7 @@ def main() -> None:
         run_notes=" | ".join(unique_keep_order(run_notes)),
     )
 
-    st.success(f"Search complete. Your workbook will download as **{filename}**.")
+    st.success(f"Research complete. Your procurement workbook will download as **{filename}**.")
     best_count = sum(1 for item in product_results if item.best_match)
     if best_count:
         st.info(
