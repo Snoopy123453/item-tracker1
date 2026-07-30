@@ -1,26 +1,25 @@
-# Upgrade to v33 — Phase 2 React Foundation
+# Product Hunter Pro v33 — Research Orchestrator 2.0
 
-v33 begins Phase 2 by adding a real React customer interface and FastAPI backend while retaining the Streamlit app.
+## What changed
 
-## Included
+- Research is now knowledge-first instead of SearXNG-first.
+- Previously reviewed product evidence is returned even when live search providers are blocked.
+- Exact model numbers are preserved and searched before broad keywords.
+- Known manufacturer domains can be refreshed through public sitemap files without a search API.
+- Search providers are isolated and receive health states, latency, result counts, and error messages.
+- Expanded manufacturer, document, offer, and lifecycle searches only run after an exact query succeeds.
+- A degraded provider no longer receives a burst of follow-up requests.
+- Provider health and the generated research plan are returned in research metadata for diagnostics.
+- SearXNG remains supported, but it is now one optional discovery provider rather than the entire research system.
 
-- Next.js App Router frontend with TypeScript
-- Professional left navigation and sticky command header
-- Dashboard API and React dashboard
-- Background research job API and live polling UI
-- Product intelligence API and grid
-- CORS configuration
-- Docker files for independent frontend/backend deployment
-- Existing product logic reused through `product_finder`
+## Deployment
 
-## Why both interfaces remain
+Replace the existing repository files with this release and reboot Streamlit. Existing secrets remain valid.
 
-The React client is now the migration target. Streamlit remains the stable admin/fallback console until feature parity is reached.
+Recommended provider order:
 
-## Next update — v34
+```toml
+SEARCH_PROVIDER_ORDER = "searxng,serpapi"
+```
 
-- Full Projects workflow in React
-- RFQ & Quote Center migration
-- Product details inspector
-- Authentication foundation
-- PostgreSQL adapter interface
+SerpApi can remain blank. Product Hunter will still reuse verified evidence and known manufacturer sources when live providers are unavailable.
