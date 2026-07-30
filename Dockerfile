@@ -1,19 +1,19 @@
 FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PORT=8501
-
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+COPY requirements.txt ./requirements.txt
+COPY api/requirements.txt ./api/requirements.txt
 
-RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
-COPY --chown=appuser:appgroup . .
-USER appuser
+RUN pip install --no-cache-dir \
+    -r requirements.txt \
+    -r api/requirements.txt
 
-EXPOSE 8501
+COPY product_finder ./product_finder
+COPY api ./api
 
-CMD ["sh", "-c", "streamlit run app.py --server.address=0.0.0.0 --server.port=${PORT:-8501} --server.headless=true"]
+ENV PYTHONPATH=/app
+
+EXPOSE 8000
+
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
