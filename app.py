@@ -27,6 +27,7 @@ from product_finder.spreadsheet import create_product_workbook_bytes
 from product_finder.purchase_tracker import extract_purchase_candidates, create_purchase_tracker_bytes
 from product_finder.rfq_builder import extract_rfq_items, build_rfq_email, create_rfq_workbook
 from product_finder.quote_center import parse_quote_file, quote_dataframe, vendor_summary, award_recommendation, create_bid_tab_workbook
+from product_finder.workflow import create_project, list_projects, add_approval, list_approvals, save_approvals, project_metrics, list_events
 from product_finder.utils import clean_text, unique_keep_order
 from product_finder.vision import analyze_uploaded_image
 from product_finder.exact_image_match import build_visual_fingerprint, visually_verify_candidates
@@ -52,7 +53,7 @@ from product_finder.procurement_controls import (
 
 
 APP_TITLE = "Product Hunter Pro"
-APP_VERSION = "31.0"
+APP_VERSION = "32.0"
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -1002,63 +1003,229 @@ def _render_request_quotes() -> None:
     st.download_button("Download RFQ workbook",data=data,file_name=filename,mime=EXCEL_MIME,use_container_width=True)
 
 
-def _render_quote_center() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Commercial Procurement Workspace · v31.1</div><h1>RFQ & Quote Center</h1><p>Create vendor-ready RFQs, import competing quotes, compare landed cost and lead time, flag substitutions, and generate a professional bid tab from one workspace.</p></div>""", unsafe_allow_html=True)
-    st.markdown("""<div class="enterprise-ribbon"><div class="group"><span class="cmd active">RFQ Home</span><span class="cmd">Create RFQ</span><span class="cmd">Import Quotes</span></div><div class="group"><span class="cmd">Compare</span><span class="cmd">Award Review</span><span class="cmd">Bid Tab</span></div><div class="group"><span class="cmd">Export</span><span class="cmd">Audit</span></div></div>""", unsafe_allow_html=True)
-    create_tab, compare_tab, award_tab = st.tabs(["Create RFQ", "Quote Comparison", "Award Recommendation"])
-    with create_tab:
-        _render_request_quotes()
-    with compare_tab:
-        st.subheader("Import vendor quotes")
-        project_name = st.text_input("Project name for bid tab", key="quote_center_project")
-        files = st.file_uploader("Upload vendor quote workbooks or CSV files", type=["xlsx", "xlsm", "csv"], accept_multiple_files=True, key="quote_center_files")
-        lines = []
+def _quote_center_imported_lines() -> list:
+    return st.session_state.get("quote_center_lines", []) or []
+
+
+def _quote_center_dataframes() -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    lines = _quote_center_imported_lines()
+    if not lines:
+        return pd.DataFrame(), pd.DataFrame(), {}
+    df = quote_dataframe(lines)
+    summary = vendor_summary(df)
+    rec = award_recommendation(summary)
+    st.session_state["quote_center_recommendation"] = rec
+    st.session_state["quote_center_summary"] = summary.to_dict("records")
+    return df, summary, rec
+
+
+def _quote_center_empty(message: str) -> None:
+    st.markdown(
+        f'<div class="empty-state"><h3>No quote data available</h3><p>{message}</p></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _set_quote_center_page(page: str) -> None:
+    st.session_state["quote_center_page"] = page
+
+
+def _quote_center_nav() -> str:
+    pages = ["RFQ Home", "Create RFQ", "Import Quotes", "Compare", "Award Review", "Bid Tab", "Export", "Audit"]
+    current = st.session_state.get("quote_center_page", "RFQ Home")
+    if current not in pages:
+        current = "RFQ Home"
+    selected = st.radio(
+        "RFQ navigation",
+        pages,
+        index=pages.index(current),
+        horizontal=True,
+        label_visibility="collapsed",
+        key=f"quote_center_navigation_{current}",
+    )
+    st.session_state["quote_center_page"] = selected
+    return selected
+
+
+def _render_quote_center_home() -> None:
+    lines = _quote_center_imported_lines()
+    df, summary, rec = _quote_center_dataframes()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Imported quote lines", len(lines))
+    c2.metric("Vendors", int(summary["vendor"].nunique()) if not summary.empty else 0)
+    c3.metric("Lowest quote", f"${summary['quoted_total'].min():,.2f}" if not summary.empty else "—")
+    c4.metric("Recommended vendor", rec.get("vendor", "—") if rec else "—")
+    st.markdown("### Start a procurement action")
+    a, b, c = st.columns(3)
+    with a:
+        st.markdown("**Create an RFQ**")
+        st.caption("Build a vendor-ready request from a Product Hunter workbook or manual line items.")
+        if st.button("Open Create RFQ", use_container_width=True, type="primary"):
+            _set_quote_center_page("Create RFQ")
+            st.rerun()
+    with b:
+        st.markdown("**Import vendor quotes**")
+        st.caption("Upload CSV or Excel quotes and normalize prices, freight, lead time, and substitutions.")
+        if st.button("Open Import Quotes", use_container_width=True):
+            _set_quote_center_page("Import Quotes")
+            st.rerun()
+    with c:
+        st.markdown("**Compare and award**")
+        st.caption("Review landed totals, scope coverage, lead times, and the award recommendation.")
+        if st.button("Open Comparison", use_container_width=True):
+            _set_quote_center_page("Compare")
+            st.rerun()
+    if not summary.empty:
+        st.markdown("### Current vendor summary")
+        st.dataframe(summary, use_container_width=True, hide_index=True, column_config={
+            "quoted_total": st.column_config.NumberColumn("Quoted total", format="$%.2f"),
+            "coverage_score": st.column_config.ProgressColumn("Coverage", min_value=0, max_value=100, format="%.1f%%"),
+            "avg_lead_days": st.column_config.NumberColumn("Avg lead days", format="%.1f"),
+        })
+
+
+def _render_quote_center_import() -> None:
+    st.subheader("Import vendor quotes")
+    st.caption("Upload one or more quote files. Previously imported data remains available while you move between RFQ Center pages.")
+    project_name = st.text_input("Project name for bid tab", key="quote_center_project")
+    files = st.file_uploader(
+        "Upload vendor quote workbooks or CSV files",
+        type=["xlsx", "xlsm", "csv"],
+        accept_multiple_files=True,
+        key="quote_center_files",
+    )
+    if st.button("Import selected quote files", type="primary", use_container_width=True, disabled=not bool(files)):
+        imported = []
+        failures = []
         for file in files or []:
             try:
-                lines.extend(parse_quote_file(file.getvalue(), file.name))
+                imported.extend(parse_quote_file(file.getvalue(), file.name))
             except Exception as exc:
-                st.error(f"Could not import {file.name}: {exc}")
-        if not lines:
-            st.markdown('<div class="empty-state"><h3>No vendor quotes imported</h3><p>Upload two or more CSV/XLSX quote files. The importer recognizes common vendor, model, quantity, price, freight, tax, lead-time, stock, and substitution columns.</p></div>', unsafe_allow_html=True)
-        else:
-            df = quote_dataframe(lines)
-            summary = vendor_summary(df)
-            rec = award_recommendation(summary)
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Vendors", int(summary["vendor"].nunique()))
-            c2.metric("Quote lines", len(df))
-            c3.metric("Lowest total", f"${summary['quoted_total'].min():,.2f}")
-            c4.metric("Best coverage", f"{summary['coverage_score'].max():.1f}%")
-            st.markdown("### Vendor summary")
-            st.dataframe(summary, use_container_width=True, hide_index=True, column_config={
-                "quoted_total": st.column_config.NumberColumn("Quoted total", format="$%.2f"),
-                "coverage_score": st.column_config.ProgressColumn("Coverage", min_value=0, max_value=100, format="%.1f%%"),
-                "avg_lead_days": st.column_config.NumberColumn("Avg lead days", format="%.1f"),
+                failures.append(f"{file.name}: {exc}")
+        if imported:
+            st.session_state["quote_center_lines"] = imported
+            st.session_state["quote_center_imported_names"] = [f.name for f in files or []]
+            st.session_state.setdefault("quote_center_audit", []).append({
+                "action": "Imported quotes", "details": f"{len(imported)} lines from {len(files or [])} file(s)", "time": time.time()
             })
-            st.markdown("### Normalized quote lines")
-            st.dataframe(df, use_container_width=True, hide_index=True, column_config={
-                "unit_price": st.column_config.NumberColumn("Unit price", format="$%.2f"),
-                "landed_total": st.column_config.NumberColumn("Landed total", format="$%.2f"),
-                "extended_price": st.column_config.NumberColumn("Extended", format="$%.2f"),
-            })
-            bid = create_bid_tab_workbook(lines, project_name)
-            st.download_button("Download professional bid tab", bid, file_name=(clean_text(project_name).replace(" ", "_") or "Project") + "_Bid_Tab.xlsx", mime=EXCEL_MIME, use_container_width=True, type="primary")
-            st.session_state["quote_center_recommendation"] = rec
-            st.session_state["quote_center_summary"] = summary.to_dict("records")
-    with award_tab:
-        rec = st.session_state.get("quote_center_recommendation") or {}
-        if not rec:
-            st.info("Import vendor quotes in the Quote Comparison tab to generate an award recommendation.")
-        else:
-            vendor = rec.get("vendor", "")
-            score = float(rec.get("score", 0))
-            total = float(rec.get("quoted_total", 0))
-            coverage = float(rec.get("coverage_score", 0))
-            lead = float(rec.get("avg_lead_days", 0))
-            st.markdown(f'<div class="award-card"><strong>Recommended vendor: {vendor}</strong><br>Decision score: {score:.1f}/100 · Quoted total: ${total:,.2f} · Coverage: {coverage:.1f}% · Average lead: {lead:.1f} days</div>', unsafe_allow_html=True)
-            st.caption("This is a decision-support recommendation. Review scope, exclusions, substitutions, taxes, freight, commercial terms, and technical compliance before award.")
-            st.dataframe(pd.DataFrame(st.session_state.get("quote_center_summary", [])), use_container_width=True, hide_index=True)
+            st.success(f"Imported {len(imported)} quote line(s) from {len(files or [])} file(s).")
+        for failure in failures:
+            st.error(failure)
+    lines = _quote_center_imported_lines()
+    if not lines:
+        _quote_center_empty("Upload vendor quote files, then click Import selected quote files.")
+        return
+    df, summary, _ = _quote_center_dataframes()
+    st.success(f"{len(df)} normalized quote line(s) are ready for comparison.")
+    st.dataframe(df, use_container_width=True, hide_index=True, height=420, column_config={
+        "unit_price": st.column_config.NumberColumn("Unit price", format="$%.2f"),
+        "landed_total": st.column_config.NumberColumn("Landed total", format="$%.2f"),
+        "extended_price": st.column_config.NumberColumn("Extended", format="$%.2f"),
+    })
+    if st.button("Continue to Compare", use_container_width=True):
+        _set_quote_center_page("Compare")
+        st.rerun()
 
+
+def _render_quote_center_compare() -> None:
+    df, summary, _ = _quote_center_dataframes()
+    if df.empty:
+        _quote_center_empty("Import at least one vendor quote before opening comparison.")
+        return
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Vendors", int(summary["vendor"].nunique()))
+    c2.metric("Quote lines", len(df))
+    c3.metric("Lowest total", f"${summary['quoted_total'].min():,.2f}")
+    c4.metric("Best coverage", f"{summary['coverage_score'].max():.1f}%")
+    st.markdown("### Vendor summary")
+    st.dataframe(summary, use_container_width=True, hide_index=True, column_config={
+        "quoted_total": st.column_config.NumberColumn("Quoted total", format="$%.2f"),
+        "coverage_score": st.column_config.ProgressColumn("Coverage", min_value=0, max_value=100, format="%.1f%%"),
+        "avg_lead_days": st.column_config.NumberColumn("Avg lead days", format="%.1f"),
+    })
+    st.markdown("### Normalized quote lines")
+    st.dataframe(df, use_container_width=True, hide_index=True, column_config={
+        "unit_price": st.column_config.NumberColumn("Unit price", format="$%.2f"),
+        "landed_total": st.column_config.NumberColumn("Landed total", format="$%.2f"),
+        "extended_price": st.column_config.NumberColumn("Extended", format="$%.2f"),
+    })
+
+
+def _render_quote_center_award() -> None:
+    _, summary, rec = _quote_center_dataframes()
+    if summary.empty or not rec:
+        _quote_center_empty("Import quote data before generating an award recommendation.")
+        return
+    vendor = rec.get("vendor", "")
+    score = float(rec.get("score", 0))
+    total = float(rec.get("quoted_total", 0))
+    coverage = float(rec.get("coverage_score", 0))
+    lead = float(rec.get("avg_lead_days", 0))
+    st.markdown(f'<div class="award-card"><strong>Recommended vendor: {vendor}</strong><br>Decision score: {score:.1f}/100 · Quoted total: ${total:,.2f} · Coverage: {coverage:.1f}% · Average lead: {lead:.1f} days</div>', unsafe_allow_html=True)
+    st.caption("Decision support only. Review scope, exclusions, substitutions, taxes, freight, commercial terms, and technical compliance before award.")
+    st.dataframe(summary, use_container_width=True, hide_index=True)
+    decision = st.selectbox("Award decision", ["Pending review", "Approve recommended vendor", "Select another vendor", "Reject all quotes"], key="quote_award_decision")
+    note = st.text_area("Award review note", key="quote_award_note")
+    if st.button("Record award review", type="primary", use_container_width=True):
+        st.session_state.setdefault("quote_center_audit", []).append({
+            "action": "Award review", "details": f"{decision}. {note}".strip(), "time": time.time()
+        })
+        st.success("Award review recorded for this session.")
+
+
+def _render_quote_center_bid_tab() -> None:
+    lines = _quote_center_imported_lines()
+    if not lines:
+        _quote_center_empty("Import vendor quote files before generating a bid tab.")
+        return
+    project_name = st.text_input("Project name", value=st.session_state.get("quote_center_project", ""), key="quote_bid_project")
+    bid = create_bid_tab_workbook(lines, project_name)
+    filename = (clean_text(project_name).replace(" ", "_") or "Project") + "_Bid_Tab.xlsx"
+    st.download_button("Download professional bid tab", bid, file_name=filename, mime=EXCEL_MIME, use_container_width=True, type="primary")
+    st.caption("The workbook includes normalized quote lines, vendor totals, coverage, lead-time comparison, and the recommended award candidate.")
+
+
+def _render_quote_center_export() -> None:
+    df, summary, rec = _quote_center_dataframes()
+    if df.empty:
+        _quote_center_empty("Import quotes before exporting quote-center data.")
+        return
+    col1, col2, col3 = st.columns(3)
+    col1.download_button("Export quote lines CSV", df.to_csv(index=False).encode("utf-8"), "quote_lines.csv", "text/csv", use_container_width=True)
+    col2.download_button("Export vendor summary CSV", summary.to_csv(index=False).encode("utf-8"), "vendor_summary.csv", "text/csv", use_container_width=True)
+    payload = {"recommendation": rec, "summary": summary.to_dict("records"), "quote_lines": df.to_dict("records")}
+    col3.download_button("Export decision package JSON", json.dumps(payload, indent=2, default=str).encode("utf-8"), "quote_decision_package.json", "application/json", use_container_width=True)
+
+
+def _render_quote_center_audit() -> None:
+    events = st.session_state.get("quote_center_audit", []) or []
+    if not events:
+        st.info("No RFQ or quote-center actions have been recorded during this session.")
+        return
+    audit_df = pd.DataFrame([{**event, "time": _format_epoch(event.get("time"))} for event in reversed(events)])
+    st.dataframe(audit_df, use_container_width=True, hide_index=True)
+    st.download_button("Export audit CSV", audit_df.to_csv(index=False).encode("utf-8"), "rfq_quote_audit.csv", "text/csv", use_container_width=True)
+
+
+def _render_quote_center() -> None:
+    st.markdown("""<div class="hero"><div class="eyebrow">Commercial Procurement Workspace · v31.2</div><h1>RFQ & Quote Center</h1><p>Create vendor-ready RFQs, import competing quotes, compare landed cost and lead time, flag substitutions, and generate a professional bid tab from one workspace.</p></div>""", unsafe_allow_html=True)
+    page = _quote_center_nav()
+    if page == "RFQ Home":
+        _render_quote_center_home()
+    elif page == "Create RFQ":
+        _render_request_quotes()
+    elif page == "Import Quotes":
+        _render_quote_center_import()
+    elif page == "Compare":
+        _render_quote_center_compare()
+    elif page == "Award Review":
+        _render_quote_center_award()
+    elif page == "Bid Tab":
+        _render_quote_center_bid_tab()
+    elif page == "Export":
+        _render_quote_center_export()
+    elif page == "Audit":
+        _render_quote_center_audit()
 
 def _format_epoch(value: object) -> str:
     try:
@@ -1067,8 +1234,63 @@ def _format_epoch(value: object) -> str:
         return ""
 
 
+
+def _render_project_workflow() -> None:
+    st.markdown("""<div class="hero"><div class="eyebrow">Enterprise Workflow · v32</div><h1>Project Workflow & Approvals</h1><p>Organize procurement by project, assign reviewers and due dates, manage approval queues, and preserve decision history.</p></div>""", unsafe_allow_html=True)
+    projects = list_projects()
+    with st.expander("Create project", expanded=projects.empty):
+        c1,c2=st.columns(2)
+        name=c1.text_input("Project name", key="wf_project_name")
+        number=c2.text_input("Project number", key="wf_project_number")
+        c3,c4=st.columns(2)
+        client=c3.text_input("Client", key="wf_client")
+        manager=c4.text_input("Project manager", key="wf_manager")
+        due=st.date_input("Target completion", key="wf_project_due")
+        if st.button("Create project", type="primary", key="wf_create_project"):
+            if not name.strip(): st.error("Enter a project name.")
+            else:
+                create_project(name, number, client, manager, due.isoformat())
+                st.success("Project created."); st.rerun()
+    projects=list_projects()
+    if projects.empty:
+        st.info("Create a project to begin managing approvals."); return
+    labels={f"{r['name']} · {r['project_number'] or 'No number'}":int(r['id']) for _,r in projects.iterrows()}
+    selected=st.selectbox("Active project", list(labels), key="wf_active_project")
+    pid=labels[selected]
+    m=project_metrics(pid)
+    cols=st.columns(4)
+    cols[0].metric("Approval items",m['total']); cols[1].metric("Approved / progressed",m['approved']); cols[2].metric("Needs review",m['needs_review']); cols[3].metric("Overdue",m['overdue'])
+    st.progress(min(max(m['completion']/100,0),1), text=f"Workflow completion: {m['completion']}%")
+    tabs=st.tabs(["Approval Queue","Add Item","Activity","Export"])
+    with tabs[0]:
+        df=list_approvals(pid)
+        if df.empty: st.info("No approval items yet.")
+        else:
+            visible=['id','item_tag','division','product','manufacturer','model','reviewer','due_date','status','priority','decision_note']
+            edited=st.data_editor(df[visible], hide_index=True, num_rows='fixed', use_container_width=True, column_config={
+                'id':st.column_config.NumberColumn('ID',disabled=True),
+                'status':st.column_config.SelectboxColumn('Status',options=['Needs review','In review','Approved','Rejected','Quoted','Ordered','Received','Installed']),
+                'priority':st.column_config.SelectboxColumn('Priority',options=['Low','Normal','High','Critical'])})
+            actor=st.text_input("Updated by",key="wf_actor")
+            if st.button("Save approval changes",type="primary",key="wf_save_approvals"):
+                save_approvals(pid,edited,actor); st.success("Approval queue saved."); st.rerun()
+    with tabs[1]:
+        c1,c2=st.columns(2); product=c1.text_input("Product / description",key="wf_product"); tag=c2.text_input("Item tag",key="wf_tag")
+        c3,c4=st.columns(2); manufacturer=c3.text_input("Manufacturer",key="wf_mfr"); model=c4.text_input("Model",key="wf_model")
+        c5,c6=st.columns(2); division=c5.text_input("Division / cost code",key="wf_division"); reviewer=c6.text_input("Reviewer",key="wf_reviewer")
+        c7,c8=st.columns(2); due=c7.date_input("Review due date",key="wf_due"); priority=c8.selectbox("Priority",['Low','Normal','High','Critical'],index=1,key="wf_priority")
+        if st.button("Add to approval queue",type="primary",key="wf_add_item"):
+            if not product.strip(): st.error("Enter a product or description.")
+            else: add_approval(pid,product,tag,division,manufacturer,model,reviewer,due.isoformat(),priority); st.success("Item added."); st.rerun()
+    with tabs[2]:
+        events=list_events(pid); st.dataframe(events,hide_index=True,use_container_width=True) if not events.empty else st.info("No activity yet.")
+    with tabs[3]:
+        df=list_approvals(pid); events=list_events(pid)
+        st.download_button("Download approval register CSV",df.to_csv(index=False).encode(),f"project_{pid}_approval_register.csv","text/csv",disabled=df.empty)
+        st.download_button("Download audit log CSV",events.to_csv(index=False).encode(),f"project_{pid}_audit_log.csv","text/csv",disabled=events.empty)
+
 def _render_dashboard_workspace() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v31.1</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Product Hunter Pro · v31.2</div><h1>Procurement Dashboard</h1><p>Monitor research performance, reviewed products, cache health, and recent activity from one professional control center.</p></div>""", unsafe_allow_html=True)
     kb = ProductKnowledgeBase()
     stats = kb.stats()
     run_stats = kb.research_run_stats()
@@ -1569,8 +1791,8 @@ def _main_impl() -> None:
 
     with st.sidebar:
         st.markdown("### PRODUCT HUNTER")
-        st.caption("Procurement Intelligence Platform · v31.1")
-        app_mode = st.radio("Workspace", ["Dashboard", "Product Search", "Product Workspace", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "RFQ & Quote Center", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
+        st.caption("Procurement Intelligence Platform · v32.0")
+        app_mode = st.radio("Workspace", ["Dashboard", "Project Workflow", "Product Search", "Product Workspace", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "RFQ & Quote Center", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
         with st.expander("Appearance"):
             theme = st.selectbox("Theme", ["Light", "Dark"], index=0 if st.session_state["ui_theme"] == "Light" else 1)
             density = st.selectbox("Table density", ["Compact", "Comfortable"], index=0 if st.session_state["ui_density"] == "Compact" else 1)
@@ -1582,13 +1804,16 @@ def _main_impl() -> None:
                 st.session_state["ui_text_size"] = text_size
                 st.rerun()
         with st.expander("Quick navigation"):
-            quick_target = st.selectbox("Go to", ["Dashboard", "Product Search", "Product Workspace", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "RFQ & Quote Center", "Request Quotes", "Purchase Tracker"], key="quick_nav_target")
+            quick_target = st.selectbox("Go to", ["Dashboard", "Project Workflow", "Product Search", "Product Workspace", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "RFQ & Quote Center", "Request Quotes", "Purchase Tracker"], key="quick_nav_target")
             if st.button("Open workspace", use_container_width=True, key="quick_nav_open"):
                 st.session_state["workspace_mode"] = quick_target
                 st.rerun()
 
     if app_mode == "Dashboard":
         _render_dashboard_workspace()
+        return
+    if app_mode == "Project Workflow":
+        _render_project_workflow()
         return
     if app_mode == "Product Workspace":
         _render_product_workspace()
@@ -1624,7 +1849,7 @@ def _main_impl() -> None:
         _render_project_intelligence(openai_api_key, config.openai_model)
         return
 
-    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v31.1</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Home</span><span>Research</span><span>Products</span><span>Documents</span><span>Vendors</span><span>RFQ & Quotes</span><span>Reports</span><span>Settings</span></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Procurement Intelligence Workspace · v31.2</div><h1>Product Hunter Pro</h1><p>Research, verify, compare, and retain product intelligence across manufacturers, distributors, technical documents, legacy sources, and purchasing channels.</p></div><div class="commandbar"><span class="pill">Home</span><span>Research</span><span>Products</span><span>Documents</span><span>Vendors</span><span>RFQ & Quotes</span><span>Reports</span><span>Settings</span></div>""", unsafe_allow_html=True)
 
     command_cols = st.columns([1, 1, 1, 1, 5])
     if command_cols[0].button("New research", use_container_width=True):

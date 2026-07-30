@@ -1,0 +1,25 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: api.Dockerfile
+    environment:
+      - CORS_ORIGINS=http://localhost:3000
+      - PRODUCT_HUNTER_DB=/data/knowledge.sqlite3
+    env_file: .env
+    volumes:
+      - product-data:/data
+    ports:
+      - "8000:8000"
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+volumes:
+  product-data:
