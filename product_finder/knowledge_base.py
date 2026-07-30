@@ -106,7 +106,7 @@ class ProductKnowledgeBase:
 
     @staticmethod
     def cache_key(query: str, location: str = "", depth: str = "Standard") -> str:
-        raw = "|".join([query.strip().casefold(), location.strip().casefold(), depth.casefold()])
+        raw = "|".join(["ranking-v32.1", query.strip().casefold(), location.strip().casefold(), depth.casefold()])
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def get_research(self, query: str, location: str = "", depth: str = "Standard") -> dict[str, Any] | None:

@@ -4,6 +4,8 @@ from typing import Any
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import re
+
 import requests
 
 from .models import InputRecord, ProductResult, StoreResult
@@ -500,6 +502,22 @@ _DISTRIBUTOR_DOMAINS = {
 }
 _DOC_TERMS = ("spec", "submittal", "manual", "installation", "warranty", "parts", "cad", "bim", "revit", "datasheet", "technical")
 _LEGACY_TERMS = ("discontinued", "obsolete", "legacy", "superseded", "replacement", "archived", "archive")
+_DICTIONARY_DOMAINS = {
+    "merriam-webster.com", "dictionary.com", "cambridge.org", "collinsdictionary.com",
+    "vocabulary.com", "wiktionary.org", "thefreedictionary.com", "wordnik.com",
+}
+_AMBIGUOUS_BRAND_WORDS = {"just", "ideal", "best", "standard", "general", "advance", "delta", "american"}
+_PRODUCT_CONTEXT_TERMS = {
+    "product", "model", "sku", "part", "manufacturer", "sink", "faucet", "drain", "valve",
+    "pump", "fixture", "hoodie", "shirt", "shoe", "ssd", "phone", "laptop", "manual",
+    "spec", "submittal", "datasheet", "price", "buy", "supplier", "distributor", "retailer",
+}
+_QUERY_STOPWORDS = {
+    "the", "and", "or", "for", "with", "from", "this", "that", "official", "product",
+    "manufacturer", "supplier", "distributor", "retailer", "price", "buy", "spec", "sheet",
+    "manual", "installation", "technical", "data", "quote", "rfq", "lead", "time",
+}
+
 
 
 def _canonical_url(url: str) -> str:
@@ -510,26 +528,74 @@ def _canonical_url(url: str) -> str:
         return url.strip().lower()
 
 
+def _normalize_model_token(value: str) -> str:
+    """Normalize model text while preserving meaningful letters and digits."""
+    return re.sub(r"[^a-z0-9]", "", clean_text(value).lower())
+
+
 def _query_model_tokens(query: str) -> list[str]:
-    return [t.lower() for t in clean_text(query).replace("/", " ").split() if any(ch.isdigit() for ch in t) and len(t) >= 3]
+    tokens: list[str] = []
+    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9._/\-]*", clean_text(query)):
+        normalized = _normalize_model_token(token)
+        if len(normalized) >= 4 and any(ch.isdigit() for ch in normalized) and any(ch.isalpha() for ch in normalized):
+            tokens.append(normalized)
+    return unique_keep_order(tokens)
+
+
+def _query_relevance_tokens(query: str) -> list[str]:
+    words = re.findall(r"[a-z0-9]+", clean_text(query).lower())
+    return unique_keep_order([w for w in words if len(w) > 2 and w not in _QUERY_STOPWORDS and not w.isdigit()])
+
+
+def _domain_matches(domain: str, candidates: set[str]) -> bool:
+    return domain in candidates or any(domain.endswith("." + candidate) for candidate in candidates)
+
+
+def _is_dictionary_result(domain: str, title: str, snippet: str) -> bool:
+    text = f"{title} {snippet}".lower()
+    return _domain_matches(domain, _DICTIONARY_DOMAINS) or any(
+        phrase in text for phrase in ("definition & meaning", "english meaning", "dictionary definition", "word that starts")
+    )
+
+
+def _product_intent(query: str) -> bool:
+    lower = clean_text(query).lower()
+    return bool(_query_model_tokens(query)) or any(term in lower for term in _PRODUCT_CONTEXT_TERMS)
+
+
+def _relevance_metrics(query: str, haystack: str) -> tuple[float, bool, int]:
+    normalized_haystack = _normalize_model_token(haystack)
+    model_tokens = _query_model_tokens(query)
+    exact_model = bool(model_tokens and all(token in normalized_haystack for token in model_tokens))
+    terms = _query_relevance_tokens(query)
+    matched = sum(1 for term in terms if term in haystack.lower())
+    coverage = matched / max(1, len(terms))
+    return coverage, exact_model, matched
 
 
 def _classify_web_result(*, query: str, title: str, snippet: str, link: str) -> tuple[str, str, bool, bool, bool, bool, float, str]:
     domain = urlparse(link).netloc.lower().removeprefix("www.")
     text = f"{title} {snippet} {link}".lower()
     model_tokens = _query_model_tokens(query)
-    exact_model = bool(model_tokens and all(token in text for token in model_tokens))
+    normalized_text = _normalize_model_token(text)
+    exact_model = bool(model_tokens and all(token in normalized_text for token in model_tokens))
     is_pdf = link.lower().split("?")[0].endswith(".pdf")
     legacy = any(term in text for term in _LEGACY_TERMS)
     document = is_pdf or any(term in text for term in _DOC_TERMS)
     marketplace = domain in _MARKETPLACE_DOMAINS or any(domain.endswith("." + d) for d in _MARKETPLACE_DOMAINS)
     distributor = domain in _DISTRIBUTOR_DOMAINS or any(domain.endswith("." + d) for d in _DISTRIBUTOR_DOMAINS)
 
-    query_words = [w.lower() for w in clean_text(query).replace("-", " ").split() if len(w) > 2 and not any(ch.isdigit() for ch in w)]
+    query_words = [w for w in _query_relevance_tokens(query) if not any(ch.isdigit() for ch in w)]
     likely_brand = query_words[0] if query_words else ""
-    official = bool(likely_brand and likely_brand in domain.replace("-", "")) and not marketplace and not distributor
+    compact_domain = domain.replace("-", "").replace(".", "")
+    brand_is_usable = bool(likely_brand and (likely_brand not in _AMBIGUOUS_BRAND_WORDS or exact_model))
+    official = bool(brand_is_usable and likely_brand in compact_domain) and not marketplace and not distributor
 
-    if legacy:
+    dictionary_result = _is_dictionary_result(domain, title, snippet)
+
+    if dictionary_result:
+        source_type = "Irrelevant reference"
+    elif legacy:
         source_type = "Legacy / discontinued"
     elif official and document:
         source_type = "Official manufacturer document"
@@ -544,7 +610,9 @@ def _classify_web_result(*, query: str, title: str, snippet: str, link: str) -> 
     else:
         source_type = "General web"
 
-    if document:
+    if dictionary_result:
+        result_kind = "Dictionary / reference"
+    elif document:
         result_kind = "PDF / technical document" if is_pdf else "Documentation page"
     elif "product" in text or exact_model:
         result_kind = "Product page"
@@ -553,13 +621,14 @@ def _classify_web_result(*, query: str, title: str, snippet: str, link: str) -> 
     else:
         result_kind = "Web result"
 
-    reliability = 95.0 if official and exact_model else 90.0 if official else 85.0 if distributor and exact_model else 78.0 if distributor else 68.0 if document else 58.0 if marketplace else 45.0
+    reliability = 5.0 if dictionary_result else 95.0 if official and exact_model else 90.0 if official else 85.0 if distributor and exact_model else 78.0 if distributor else 68.0 if document else 58.0 if marketplace else 45.0
     evidence_parts = []
     if exact_model: evidence_parts.append("Exact model text found")
     if official: evidence_parts.append("Likely official manufacturer domain")
     if distributor: evidence_parts.append("Known distributor domain")
     if is_pdf: evidence_parts.append("Direct PDF")
     if legacy: evidence_parts.append("Lifecycle/legacy terms found")
+    if dictionary_result: evidence_parts.append("Dictionary/reference result excluded from product evidence")
     return source_type, result_kind, official, distributor, exact_model, legacy, reliability, "; ".join(evidence_parts)
 
 
@@ -691,11 +760,18 @@ def _organic_to_omni(*, query: str, items: list[dict[str, Any]], raw_source: str
         source_type, kind, official, distributor, exact_model, legacy, reliability, evidence = _classify_web_result(
             query=q, title=title, snippet=snippet, link=link
         )
-        query_terms = [t.lower() for t in q.replace("-", " ").split() if len(t) > 2]
         haystack = f"{title} {snippet} {link}".lower()
-        coverage = sum(1 for t in query_terms if t in haystack) / max(1, len(query_terms))
-        match = 100.0 if exact_model else round(45.0 + 45.0 * coverage, 1)
-        overall = round(match * 0.62 + reliability * 0.38, 1)
+        coverage, normalized_exact, matched_terms = _relevance_metrics(q, haystack)
+        exact_model = exact_model or normalized_exact
+        dictionary_result = _is_dictionary_result(domain, title, snippet)
+        if dictionary_result and _product_intent(q):
+            continue
+        if _query_model_tokens(q) and not exact_model and matched_terms < 2 and not official and not distributor:
+            continue
+        if not _query_model_tokens(q) and coverage < 0.34 and not official and not distributor and not marketplace:
+            continue
+        match = 100.0 if exact_model else round(25.0 + 65.0 * coverage, 1)
+        overall = round(match * 0.68 + reliability * 0.32, 1)
         status = "Verified exact source" if exact_model and official else "Exact model found" if exact_model else "Likely relevant" if overall >= 65 else "Needs review"
         results.append(OmniSearchResult(
             query=q, rank=0, title=title, source_name=domain, source_domain=domain,
@@ -954,7 +1030,7 @@ def discover_manufacturer_domains(*, query: str, results: list[OmniSearchResult]
         row = grouped.setdefault(domain, {"score": 0.0, "count": 0, "exact": 0, "docs": 0, "reasons": []})
         row["count"] += 1
         hay = f"{item.title} {item.snippet} {item.link}".lower()
-        exact = bool(model_tokens and all(tok in hay for tok in model_tokens))
+        exact = bool(model_tokens and all(tok in _normalize_model_token(hay) for tok in model_tokens))
         if exact:
             row["score"] += 40
             row["exact"] += 1
@@ -987,8 +1063,14 @@ def discover_manufacturer_domains(*, query: str, results: list[OmniSearchResult]
 def build_procurement_query_variants(query: str, *, research_depth: str = "standard", query_budget: int = 10) -> list[str]:
     """Build focused searches for procurement research instead of one generic query."""
     q = clean_text(query)
+    model_tokens = _query_model_tokens(q)
+    model_query = " ".join(model_tokens)
+    brand = _brand_hint(q)
     quoted = f'"{q}"'
-    base = [
+    base = []
+    if model_query:
+        base.extend([f'"{model_query}"', f'{brand} "{model_query}"'.strip()])
+    base.extend([
         q,
         quoted,
         f'{quoted} manufacturer official product',
@@ -997,7 +1079,7 @@ def build_procurement_query_variants(query: str, *, research_depth: str = "stand
         f'{quoted} (supplier OR distributor OR price OR buy)',
         f'{quoted} (quote OR RFQ OR lead time OR availability OR in stock)',
         f'{quoted} (discontinued OR obsolete OR superseded OR replacement OR legacy)',
-    ]
+    ])
     if research_depth == "deep":
         base.extend([
             f'{quoted} (catalog OR warranty OR parts diagram OR replacement parts) filetype:pdf',
