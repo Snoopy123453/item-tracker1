@@ -6,7 +6,12 @@ import time
 
 from .knowledge_base import ProductKnowledgeBase
 from .models import OmniSearchResult
-from .search import SearchInfrastructureUnavailable, modular_everywhere_search
+from .orchestrator import ProductResearchOrchestrator
+from .search import SearchInfrastructureUnavailable, modular_everywhere_search as _legacy_modular_search
+
+# Backward-compatible test/extension hook. New research uses the orchestrator, but
+# existing integrations that monkeypatch this symbol continue to work.
+modular_everywhere_search = _legacy_modular_search
 
 
 class ResearchAgent:
@@ -14,6 +19,7 @@ class ResearchAgent:
 
     def __init__(self, knowledge_base: ProductKnowledgeBase) -> None:
         self.knowledge_base = knowledge_base
+        self.orchestrator = ProductResearchOrchestrator(knowledge_base)
 
     def research(
         self,
@@ -57,20 +63,36 @@ class ResearchAgent:
         provider_outage = False
         used_stale_cache = False
         try:
-            results, notes = modular_everywhere_search(
-                query=query,
-                searxng_url=searxng_url,
-                brave_api_key=brave_api_key,
-                serpapi_api_key=serpapi_api_key,
-                provider_order=provider_order,
-                country_code=country_code,
-                language=language,
-                max_results=max_results,
-                research_depth=depth.casefold(),
-                max_workers=max_workers,
-                query_budget=query_budget,
-                request_timeout=request_timeout,
-            )
+            if modular_everywhere_search is not _legacy_modular_search:
+                results, notes = modular_everywhere_search(
+                    query=query,
+                    searxng_url=searxng_url,
+                    brave_api_key=brave_api_key,
+                    serpapi_api_key=serpapi_api_key,
+                    provider_order=provider_order,
+                    country_code=country_code,
+                    language=language,
+                    max_results=max_results,
+                    research_depth=depth.casefold(),
+                    max_workers=max_workers,
+                    query_budget=query_budget,
+                    request_timeout=request_timeout,
+                )
+                orchestrator_meta = {"compatibility_hook": True}
+            else:
+                results, notes, orchestrator_meta = self.orchestrator.research(
+                    query=query,
+                    searxng_url=searxng_url,
+                    brave_api_key=brave_api_key,
+                    serpapi_api_key=serpapi_api_key,
+                    provider_order=provider_order,
+                    country_code=country_code,
+                    language=language,
+                    max_results=max_results,
+                    depth=depth,
+                    query_budget=query_budget,
+                    request_timeout=request_timeout,
+                )
         except SearchInfrastructureUnavailable as exc:
             provider_outage = True
             stale = self.knowledge_base.get_stale_research(query, location, depth)
@@ -117,7 +139,7 @@ class ResearchAgent:
             cache_hit=used_stale_cache, result_count=len(results), warning_count=len(notes),
             duration_seconds=duration, status=status,
         )
-        return results, notes, {
+        response_meta = {
             "cache_hit": used_stale_cache,
             "query": query,
             "duration_seconds": duration,
@@ -126,3 +148,6 @@ class ResearchAgent:
             "used_stale_cache": used_stale_cache,
             "status": status,
         }
+        if "orchestrator_meta" in locals():
+            response_meta.update(orchestrator_meta)
+        return results, notes, response_meta
