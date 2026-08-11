@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import re
+import time
 
 import requests
 
@@ -722,6 +723,49 @@ def omni_from_existing(
     return out
 
 
+def filter_omni_relevance(query: str, results: list[OmniSearchResult]) -> list[OmniSearchResult]:
+    """Apply one final product-relevance gate to results from every provider.
+
+    Provider adapters are intentionally permissive because upstream response
+    formats vary. This final gate prevents generic dictionary/reference pages
+    and model-mismatched pages from leaking into cached or ranked product
+    evidence, including results recovered from older caches.
+    """
+    q = clean_text(query)
+    model_tokens = _query_model_tokens(q)
+    product_intent = _product_intent(q)
+    filtered: list[OmniSearchResult] = []
+    for item in results:
+        title = clean_text(item.title)
+        snippet = clean_text(item.snippet)
+        link = clean_text(item.link)
+        domain = clean_text(item.source_domain) or urlparse(link).netloc.lower().removeprefix("www.")
+        if _is_dictionary_result(domain, title, snippet):
+            continue
+        if clean_text(item.source_type).casefold() == "irrelevant reference":
+            continue
+
+        haystack = f"{title} {snippet} {link}".lower()
+        coverage, exact_from_text, matched_terms = _relevance_metrics(q, haystack)
+        if exact_from_text:
+            item.exact_model_mentioned = True
+            item.match_score = max(float(item.match_score or 0.0), 96.0)
+            item.overall_score = max(float(item.overall_score or 0.0), round(item.match_score * 0.68 + float(item.source_reliability or 0.0) * 0.32, 1))
+
+        if model_tokens and not exact_from_text:
+            saved_verified = item.raw_source == "Product Intelligence Database" and bool(item.exact_model_mentioned)
+            official_lead = bool(item.official_source) and "candidate" in clean_text(item.source_type).casefold()
+            if not saved_verified and not official_lead:
+                continue
+        elif not model_tokens and product_intent:
+            trusted = bool(item.official_source or item.authorized_distributor)
+            if coverage < 0.28 and matched_terms < 2 and not trusted:
+                continue
+
+        filtered.append(item)
+    return filtered
+
+
 def rank_omni_results(results: list[OmniSearchResult]) -> list[OmniSearchResult]:
     seen: dict[str, OmniSearchResult] = {}
     for item in results:
@@ -820,6 +864,46 @@ def brave_everywhere_search(
     return _organic_to_omni(query=query, items=items, raw_source="Brave Search API")
 
 
+def _searxng_json_request(
+    *, endpoint: str, base: str, params: dict[str, Any], headers: dict[str, str], request_timeout: int
+) -> requests.Response:
+    """Request SearXNG with one cold-start recovery attempt.
+
+    Free hosting can put the SearXNG container to sleep. The first request may
+    therefore time out or return a temporary gateway error even though the
+    service becomes healthy seconds later. Warm the root endpoint and retry
+    once with a larger read timeout before declaring an outage.
+    """
+    first_read_timeout = max(20, int(request_timeout))
+    try:
+        response = requests.get(endpoint, params=params, headers=headers, timeout=(8, first_read_timeout))
+        if response.status_code not in {502, 503, 504}:
+            return response
+    except requests.Timeout:
+        response = None
+    except requests.RequestException as exc:
+        raise SearchInfrastructureUnavailable("SearXNG could not be reached.") from exc
+
+    # Best-effort wake request. A failure here is harmless; the search retry is
+    # the authoritative check.
+    try:
+        requests.get(f"{base}/", headers={"User-Agent": USER_AGENT}, timeout=(5, 30))
+    except requests.RequestException:
+        pass
+    time.sleep(1.5)
+    try:
+        return requests.get(
+            endpoint, params=params, headers=headers,
+            timeout=(10, max(60, first_read_timeout)),
+        )
+    except requests.Timeout as exc:
+        raise SearchInfrastructureUnavailable(
+            "SearXNG timed out after a cold-start retry. The hosted search service may be asleep or unavailable."
+        ) from exc
+    except requests.RequestException as exc:
+        raise SearchInfrastructureUnavailable("SearXNG could not be reached after retry.") from exc
+
+
 def searxng_everywhere_search(
     *, query: str, base_url: str, language: str = "en", max_results: int = 20,
     request_timeout: int = 45, diagnostics_sink: list[SearxngDiagnostics] | None = None,
@@ -845,17 +929,9 @@ def searxng_everywhere_search(
     while attempt_index < len(attempts):
         params = attempts[attempt_index]
         attempt_index += 1
-        try:
-            response = requests.get(
-                endpoint, params=params, headers=headers,
-                timeout=(10, max(10, int(request_timeout))),
-            )
-        except requests.Timeout as exc:
-            raise SearchInfrastructureUnavailable(
-                "SearXNG timed out. The Render free service may still be waking up."
-            ) from exc
-        except requests.RequestException as exc:
-            raise SearchInfrastructureUnavailable("SearXNG could not be reached.") from exc
+        response = _searxng_json_request(
+            endpoint=endpoint, base=base, params=params, headers=headers, request_timeout=request_timeout
+        )
         if response.status_code == 403:
             raise SearchInfrastructureUnavailable(
                 "SearXNG JSON output is disabled on this instance. Enable format: json in settings.yml."

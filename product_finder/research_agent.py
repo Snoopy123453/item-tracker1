@@ -7,7 +7,7 @@ import time
 from .knowledge_base import ProductKnowledgeBase
 from .models import OmniSearchResult
 from .orchestrator import ProductResearchOrchestrator
-from .search import SearchInfrastructureUnavailable, modular_everywhere_search as _legacy_modular_search
+from .search import SearchInfrastructureUnavailable, filter_omni_relevance, modular_everywhere_search as _legacy_modular_search
 
 # Backward-compatible test/extension hook. New research uses the orchestrator, but
 # existing integrations that monkeypatch this symbol continue to work.
@@ -47,16 +47,19 @@ class ResearchAgent:
             if cached:
                 rows = cached.get("results", [])
                 notes = list(cached.get("notes", []))
-                restored = [OmniSearchResult(**row) for row in rows]
-                duration = time.monotonic() - started
-                run_id = self.knowledge_base.record_research_run(
-                    query=query, location=location, depth=depth, provider_order=provider_order,
-                    cache_hit=True, result_count=len(restored), warning_count=len(notes),
-                    duration_seconds=duration, status="Cache hit",
-                )
-                return restored, notes, {
-                    "cache_hit": True, "query": query, "duration_seconds": duration, "run_id": run_id,
-                }
+                restored = filter_omni_relevance(query, [OmniSearchResult(**row) for row in rows])
+                if restored:
+                    duration = time.monotonic() - started
+                    run_id = self.knowledge_base.record_research_run(
+                        query=query, location=location, depth=depth, provider_order=provider_order,
+                        cache_hit=True, result_count=len(restored), warning_count=len(notes),
+                        duration_seconds=duration, status="Cache hit",
+                    )
+                    return restored, notes, {
+                        "cache_hit": True, "query": query, "duration_seconds": duration, "run_id": run_id,
+                    }
+                # Old cache entries can contain results accepted by previous
+                # relevance rules. Ignore an all-rejected cache and refresh live.
 
         if progress:
             progress(f"Researching {query}")
@@ -98,7 +101,7 @@ class ResearchAgent:
             stale = self.knowledge_base.get_stale_research(query, location, depth)
             if stale and stale.get("results"):
                 rows = stale.get("results", [])
-                results = [OmniSearchResult(**row) for row in rows]
+                results = filter_omni_relevance(query, [OmniSearchResult(**row) for row in rows])
                 notes = list(stale.get("notes", [])) + [
                     f"Search infrastructure unavailable; showing expired cached evidence: {exc}"
                 ]
@@ -111,7 +114,7 @@ class ResearchAgent:
             if not stale or not stale.get("results"):
                 raise
             rows = stale.get("results", [])
-            results = [OmniSearchResult(**row) for row in rows]
+            results = filter_omni_relevance(query, [OmniSearchResult(**row) for row in rows])
             notes = list(stale.get("notes", [])) + [f"Live providers failed; showing expired cache: {exc}"]
             used_stale_cache = True
 

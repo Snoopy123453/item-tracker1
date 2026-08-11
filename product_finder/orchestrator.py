@@ -10,12 +10,14 @@ import xml.etree.ElementTree as ET
 import requests
 
 from .knowledge_base import ProductKnowledgeBase
+from .direct_sources import bing_rss_search, discover_official_pages, infer_manufacturer_domains
 from .models import OmniSearchResult
 from .search import (
     SearchInfrastructureUnavailable,
     brave_everywhere_search,
     google_everywhere_search,
     rank_omni_results,
+    filter_omni_relevance,
     searxng_everywhere_search,
 )
 from .utils import clean_text, unique_keep_order
@@ -63,7 +65,7 @@ class ResearchPlan:
 def build_research_plan(query: str) -> ResearchPlan:
     q = clean_text(query)
     models = unique_keep_order(_MODEL_RE.findall(q))
-    exact = f'"{models[0]}" {q}' if models else q
+    exact = f'"{models[0]}"' if models else q
     return ResearchPlan(
         original_query=q,
         exact_query=exact,
@@ -242,10 +244,28 @@ class ProductResearchOrchestrator:
         notes.extend(knowledge_notes)
         health.append(ProviderHealth("knowledge_base", "healthy" if knowledge else "empty", 0, len(knowledge), knowledge_notes[0]))
 
-        sitemap_results, sitemap_notes = self._sitemap_refresh(query, self._known_domains(knowledge), plan.model_tokens)
+        known_domains = self._known_domains(knowledge)
+        sitemap_results, sitemap_notes = self._sitemap_refresh(query, known_domains, plan.model_tokens)
         all_results.extend(sitemap_results)
         notes.extend(sitemap_notes)
         health.append(ProviderHealth("manufacturer_sitemap", "healthy" if sitemap_results else "empty", 0, len(sitemap_results), "; ".join(sitemap_notes)))
+
+        # Direct manufacturer research is intentionally independent of SearXNG.
+        # It uses verified/seed domains and official sitemaps, so a CAPTCHA on a
+        # public search engine cannot erase all useful research.
+        direct_domains = infer_manufacturer_domains(query, known_domains)
+        direct_results, direct_report = discover_official_pages(
+            query=query,
+            domains=direct_domains,
+            timeout=max(10, min(24, request_timeout)),
+            max_results=max(6, min(16, max_results)),
+        )
+        all_results.extend(direct_results)
+        notes.append(direct_report.message)
+        health.append(ProviderHealth(
+            direct_report.provider, direct_report.status, direct_report.latency_ms,
+            direct_report.result_count, direct_report.message
+        ))
 
         providers = unique_keep_order([p.strip().casefold() for p in clean_text(provider_order).split(",") if p.strip()])
         live_queries = plan.queries(depth, query_budget)
@@ -306,6 +326,23 @@ class ProductResearchOrchestrator:
             if message:
                 notes.append(f"{provider}: {message}")
 
+        # Independent keyless discovery fallback. It runs only when the primary
+        # providers and official-domain research have not produced an exact model
+        # result, conserving resources and reducing dependence on any one service.
+        if not any(item.exact_model_mentioned for item in all_results):
+            rss_results, rss_report = bing_rss_search(
+                query=plan.exact_query,
+                max_results=max(5, min(10, max_results)),
+                timeout=max(10, min(22, request_timeout)),
+            )
+            all_results.extend(rss_results)
+            notes.append(rss_report.message)
+            health.append(ProviderHealth(
+                rss_report.provider, rss_report.status, rss_report.latency_ms,
+                rss_report.result_count, rss_report.message
+            ))
+
+        all_results = filter_omni_relevance(query, all_results)
         ranked = rank_omni_results(all_results)[:max_results]
         metadata = {
             "provider_health": [health_item.__dict__ for health_item in health],
@@ -319,5 +356,5 @@ class ProductResearchOrchestrator:
         }
         if not ranked and any(item.status in {"unavailable", "error"} for item in health):
             unavailable = "; ".join(f"{item.name}: {item.message or item.status}" for item in health if item.status in {"unavailable", "error"})
-            raise SearchInfrastructureUnavailable(unavailable or "All live providers were unavailable.")
+            raise SearchInfrastructureUnavailable(unavailable or "All live and direct research providers were unavailable.")
         return ranked, notes, metadata
