@@ -1236,7 +1236,7 @@ def _format_epoch(value: object) -> str:
 
 
 def _render_project_workflow() -> None:
-    st.markdown("""<div class="hero"><div class="eyebrow">Research Orchestrator 2.0 · v33</div><h1>Project Workflow & Approvals</h1><p>Organize procurement by project, assign reviewers and due dates, manage approval queues, and preserve decision history.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="hero"><div class="eyebrow">Research Orchestrator 2.0 · v34.1</div><h1>Project Workflow & Approvals</h1><p>Organize procurement by project, assign reviewers and due dates, manage approval queues, and preserve decision history.</p></div>""", unsafe_allow_html=True)
     projects = list_projects()
     with st.expander("Create project", expanded=projects.empty):
         c1,c2=st.columns(2)
@@ -1791,7 +1791,7 @@ def _main_impl() -> None:
 
     with st.sidebar:
         st.markdown("### PRODUCT HUNTER")
-        st.caption("Procurement Intelligence Platform · v33")
+        st.caption("Procurement Intelligence Platform · v34.1")
         app_mode = st.radio("Workspace", ["Dashboard", "Project Workflow", "Product Search", "Product Workspace", "Knowledge Base", "System Center", "Project Intelligence", "Spec Sheet Compare", "Exact Product From Image", "RFQ & Quote Center", "Request Quotes", "Procurement Control Center", "Purchase Tracker"], horizontal=False, key="workspace_mode")
         with st.expander("Appearance"):
             theme = st.selectbox("Theme", ["Light", "Dark"], index=0 if st.session_state["ui_theme"] == "Light" else 1)
@@ -2227,8 +2227,8 @@ def _main_impl() -> None:
 
     if search_provider_outage and not omni_results:
         st.error(
-            "Search infrastructure is temporarily unavailable. The workbook was still created from recognized inputs, "
-            "but live sources were not returned. Open Diagnostics or retry after the SearXNG engines recover."
+            "Live and direct research sources were temporarily unavailable. The workbook was still created from recognized inputs. "
+            "Open Diagnostics to review provider health or retry later."
         )
     elif stale_cache_used:
         st.warning(
